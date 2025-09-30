@@ -5,3 +5,5 @@ python-dotenv>=1.0.1
 sqlalchemy>=2.0.30
 streamlit>=1.44.0
 pymysql>=1.1.0
+langchain_community>=0.3.21
+cryptography>=3.4.8

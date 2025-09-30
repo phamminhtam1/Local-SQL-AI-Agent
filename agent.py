@@ -9,7 +9,7 @@ from tools.query_sql_tool import SafeQuerySQLTool
 
 load_dotenv()
 
-DB_URI = os.getenv("DB_URI", "mysql+pymysql://root@127.0.0.1:3306/be_laravel")
+DB_URI = os.getenv("DB_URI", "mysql+pymysql://app_user:app_password@mysql:3306/be_laravel")
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 if not DB_URI:
