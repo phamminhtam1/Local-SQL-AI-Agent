@@ -31,7 +31,6 @@ if prompt := st.chat_input("Nhập câu hỏi về database..."):
         with st.spinner("Đang xử lý..."):
             result = app.invoke({"question": prompt})
             answer = result.get("answer", "❌ No answer")
-
             tool_results = result.get("tool_results")
             if isinstance(tool_results, list):
                 for r in tool_results:
@@ -40,10 +39,8 @@ if prompt := st.chat_input("Nhập câu hỏi về database..."):
                             df = pd.DataFrame(r)
                             if not df.empty:
                                 st.dataframe(df)
-                                continue
                         except Exception as e:
                             logger.error(f"Error converting result to DataFrame: {e}")
-                    st.markdown(r)
 
             st.markdown(answer)
             st.session_state["messages"].append(
