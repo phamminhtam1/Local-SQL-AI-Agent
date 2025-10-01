@@ -1,19 +1,37 @@
-import streamlit as st
-from agent import ask, db
+from langgraph.graph import StateGraph, END
+from agent.state import AgentState
+from agent.node import check_relevancy, select_tools, execute_tools, generate_answer, funny_response
+from agent.routers import relevance_router, execute_tools_router
 
-st.set_page_config(page_title="MySQL AI Agent")
-st.title("Local SQL AI Agent")
+def build_app():
+    workflow = StateGraph(AgentState)
 
-with st.expander("Database schema preview"):
-    st.code(db.get_table_info(), language="sql")
+    workflow.add_node("check_relevance", check_relevancy)
+    workflow.add_node("select_tools", select_tools)
+    workflow.add_node("execute_tools", execute_tools)
+    workflow.add_node("generate_answer", generate_answer)
+    workflow.add_node("funny_response", funny_response)
 
-query = st.text_area(
-    "Đặt câu hỏi:",
-    placeholder="Ví dụ: Liệt kê 10 bảng có nhiều cột nhất"
-)
+    workflow.add_conditional_edges(
+        "check_relevance",
+        relevance_router,
+        {"select_tools": "select_tools", "funny_response": "funny_response"}
+    )
 
-if st.button("Run") and query.strip():
-    with st.spinner("Đang xử lý..."):
-        result = ask(query)
-    st.subheader("Kết quả")
-    st.write(result["output"])
+    workflow.add_edge("select_tools", "execute_tools")
+
+    workflow.add_conditional_edges(
+        "execute_tools",
+        execute_tools_router,
+        {"generate_answer": "generate_answer", END: END}
+    )
+
+    workflow.add_edge("generate_answer", END)
+    workflow.add_edge("funny_response", END)
+
+    workflow.set_entry_point("check_relevance")
+    return workflow.compile()
+
+if __name__ == "__main__":
+    app = build_app()
+    print(app.invoke({"question": "Show me all users"}))

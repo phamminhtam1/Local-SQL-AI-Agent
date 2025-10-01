@@ -1,152 +1,177 @@
-# MySQL AI Agent
+# Trợ lý AI MySQL
 
-A Streamlit application that provides an AI-powered interface for querying MySQL databases using natural language.
+Ứng dụng Streamlit cung cấp giao diện AI để truy vấn cơ sở dữ liệu MySQL bằng ngôn ngữ tự nhiên.
 
-## Features
+## Tính năng
 
-- Natural language to SQL conversion using OpenAI GPT models
-- Safe SQL execution (SELECT queries only)
-- Database schema exploration
-- Interactive Streamlit web interface
+- Chuyển đổi ngôn ngữ tự nhiên sang SQL sử dụng mô hình OpenAI GPT
+- Thực thi SQL an toàn (chỉ truy vấn SELECT)
+- Khám phá schema cơ sở dữ liệu
+- Giao diện web Streamlit tương tác
 
-## Prerequisites
+## Yêu cầu
 
-- Docker and Docker Compose
-- OpenAI API key
+- Docker và Docker Compose
+- Khóa API OpenAI
 
-## Quick Start with Docker
+## Khởi động nhanh với Docker
 
-### 1. Clone and Setup
+### 1. Clone và Thiết lập
 
 ```bash
 git clone <your-repo>
 cd <your-repo>
 ```
 
-### 2. Environment Configuration
+### 2. Cấu hình Môi trường
 
-Copy the example environment file and add your OpenAI API key:
+Sao chép file môi trường mẫu và thêm khóa API OpenAI của bạn:
 
 ```bash
 cp env.example .env
 ```
 
-Edit `.env` file and add your OpenAI API key:
+Chỉnh sửa file `.env` và thêm khóa API OpenAI của bạn:
 
 ```
 OPENAI_API_KEY=your_actual_openai_api_key_here
 ```
 
-### 3. Run with Docker Compose
+### 3. Chạy với Docker Compose
 
 ```bash
-# Start the application with MySQL database
+# Khởi động ứng dụng với cơ sở dữ liệu MySQL
 docker-compose up -d
 
-# View logs
-docker-compose logs -f app
+# Xem logs
+docker-compose logs -f streamlit
 ```
 
-### 4. Access the Application
+### 4. Truy cập Ứng dụng Streamlit
 
-Open your browser and go to: http://localhost:8501
+Mở trình duyệt và truy cập: http://localhost:8501
 
-## Manual Docker Build
+Giao diện Streamlit cung cấp:
 
-If you prefer to build manually:
+- Trò chuyện tương tác với cơ sở dữ liệu
+- Hiển thị schema cơ sở dữ liệu
+- Theo dõi lịch sử truy vấn
+- Trực quan hóa truy vấn SQL
+- Kết quả trong bảng tương tác
+
+## Build Docker Thủ công
+
+Nếu bạn muốn build thủ công:
 
 ```bash
-# Build the Docker image
+# Build Docker image
 docker build -t mysql-ai-agent .
 
-# Run the container (make sure MySQL is running separately)
+# Chạy container (đảm bảo MySQL đang chạy riêng biệt)
 docker run -p 8501:8501 \
   -e OPENAI_API_KEY=your_api_key \
   -e DB_URI=mysql+pymysql://user:password@host:3306/database \
-  mysql-ai-agent
+  -e STREAMLIT_SERVER_PORT=8501 \
+  -e STREAMLIT_SERVER_ADDRESS=0.0.0.0 \
+  streamlit-agent
 ```
 
-## Development
+## Phát triển
 
-### Local Development Setup
+### Thiết lập Phát triển Cục bộ
 
-1. Install Python dependencies:
+1. Cài đặt các phụ thuộc Python:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-2. Set up environment variables:
+2. Thiết lập biến môi trường:
 
 ```bash
 cp env.example .env
-# Edit .env with your actual values
+# Chỉnh sửa .env với các giá trị thực tế của bạn
 ```
 
-3. Run the application:
+3. Chạy ứng dụng Streamlit:
 
 ```bash
-streamlit run app.py
+# Tùy chọn 1: Sử dụng script khởi động
+python run_streamlit.py
+
+# Tùy chọn 2: Lệnh streamlit trực tiếp
+streamlit run streamlit_app.py
 ```
 
-## Configuration
+## Cấu hình
 
-### Environment Variables
+### Biến Môi trường
 
-- `OPENAI_API_KEY`: Your OpenAI API key (required)
-- `OPENAI_MODEL`: OpenAI model to use (default: gpt-4o-mini)
-- `DB_URI`: MySQL database connection string
+- `OPENAI_API_KEY`: Khóa API OpenAI của bạn (bắt buộc)
+- `OPENAI_MODEL`: Mô hình OpenAI để sử dụng (mặc định: gpt-4o-mini)
+- `DB_URI`: Chuỗi kết nối cơ sở dữ liệu MySQL
 
-### Database Connection
+### Kết nối Cơ sở dữ liệu
 
-The application expects a MySQL database. You can:
+Ứng dụng yêu cầu cơ sở dữ liệu MySQL. Bạn có thể:
 
-1. Use the included MySQL container in docker-compose.yml
-2. Connect to an existing MySQL instance
-3. Use a cloud MySQL service
+1. Sử dụng container MySQL có sẵn trong docker-compose.yml
+2. Kết nối với instance MySQL hiện có
+3. Sử dụng dịch vụ MySQL trên cloud
 
-## Usage
+## Sử dụng
 
-1. Open the web interface at http://localhost:8501
-2. Ask questions about your database in natural language
-3. The AI will convert your questions to SQL and execute them safely
+1. Mở giao diện web tại http://localhost:8501
+2. Hỏi câu hỏi về cơ sở dữ liệu của bạn bằng ngôn ngữ tự nhiên
+3. AI sẽ chuyển đổi câu hỏi của bạn thành SQL và thực thi một cách an toàn
 
-Example queries:
+### Tính năng
 
-- "Show me all tables in the database"
-- "List the top 10 users by registration date"
-- "What are the most common product categories?"
+- **Giao diện Trò chuyện Tương tác**: Trò chuyện ngôn ngữ tự nhiên với cơ sở dữ liệu
+- **Hiển thị Schema Cơ sở dữ liệu**: Xem cấu trúc cơ sở dữ liệu trong thanh bên
+- **Lịch sử Truy vấn**: Theo dõi tất cả truy vấn và kết quả trước đó
+- **Hiển thị Truy vấn SQL**: Xem các truy vấn SQL được tạo
+- **Trực quan hóa Kết quả**: Xem kết quả truy vấn trong bảng
+- **Phản hồi Thông minh**: Xử lý cả truy vấn cơ sở dữ liệu và câu hỏi chung
 
-## Security
+### Ví dụ Truy vấn
 
-- Only SELECT queries are allowed
-- No write operations (INSERT, UPDATE, DELETE) are permitted
-- Database credentials should be kept secure
+- "Hiển thị tất cả người dùng"
+- "Có bao nhiêu đơn hàng?"
+- "Kể cho tôi nghe một câu chuyện cười" (cho câu hỏi không liên quan đến cơ sở dữ liệu)
+- "Sản phẩm nào phổ biến nhất?"
+- "Liệt kê người dùng được tạo trong tháng trước"
 
-## Troubleshooting
+## Bảo mật
 
-### Common Issues
+- Chỉ cho phép truy vấn SELECT
+- Không cho phép các thao tác ghi (INSERT, UPDATE, DELETE)
+- Thông tin đăng nhập cơ sở dữ liệu phải được bảo mật
 
-1. **Database Connection Error**: Check your DB_URI and ensure MySQL is running
-2. **OpenAI API Error**: Verify your API key is correct and has sufficient credits
-3. **Port Already in Use**: Change the port in docker-compose.yml or stop other services
+## Khắc phục sự cố
+
+### Vấn đề Thường gặp
+
+1. **Lỗi Kết nối Cơ sở dữ liệu**: Kiểm tra DB_URI và đảm bảo MySQL đang chạy
+2. **Lỗi API OpenAI**: Xác minh khóa API của bạn chính xác và có đủ tín dụng
+3. **Cổng Đã được Sử dụng**: Thay đổi cổng trong docker-compose.yml hoặc dừng các dịch vụ khác
 
 ### Logs
 
 ```bash
-# View application logs
+# Xem logs ứng dụng
 docker-compose logs app
 
-# View database logs
+# Xem logs cơ sở dữ liệu
 docker-compose logs mysql
 ```
 
-## Stopping the Application
+## Dừng Ứng dụng
 
 ```bash
-# Stop all services
+# Dừng tất cả dịch vụ
 docker-compose down
 
-# Stop and remove volumes (WARNING: This will delete your database data)
+# Dừng và xóa volumes (CẢNH BÁO: Điều này sẽ xóa dữ liệu cơ sở dữ liệu của bạn)
 docker-compose down -v
 ```

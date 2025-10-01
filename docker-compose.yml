@@ -22,16 +22,19 @@ services:
       timeout: 20s
       retries: 10
 
-  # Streamlit Application
-  app:
+  # LangGraph SQL Agent Application
+  agent:
     build: .
-    container_name: streamlit_app
+    container_name: langgraph_agent
     ports:
       - "8501:8501"
     environment:
       - DB_URI=mysql+pymysql://app_user:app_password@mysql:3306/be_laravel
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - OPENAI_MODEL=gpt-4o-mini
+      - STREAMLIT_SERVER_PORT=8501
+      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
+      - STREAMLIT_SERVER_HEADLESS=true
+      - STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
     depends_on:
       mysql:
         condition: service_healthy
@@ -39,6 +42,7 @@ services:
       - app_network
     volumes:
       - ./.env:/app/.env:ro
+    restart: unless-stopped
 
 volumes:
   mysql_data:
