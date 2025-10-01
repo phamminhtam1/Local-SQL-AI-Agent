@@ -42,6 +42,7 @@ services:
       - app_network
     volumes:
       - ./.env:/app/.env:ro
+      - .:/app
     restart: unless-stopped
 
 volumes:

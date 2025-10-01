@@ -7,6 +7,19 @@ logger = logging.getLogger(__name__)
 
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
+TOOL_METADATA = {
+    "list_tables": {
+        "name": "list_tables",
+        "description": "List all tables in the database with schema and sample rows",
+        "use_case": "Use when user asks for general table information, schema, or structure"
+    },
+    "query_sql": {
+        "name": "query_sql", 
+        "description": "Execute SQL SELECT queries to get specific data",
+        "use_case": "Use when user asks for specific data, calculations, rankings, or complex queries"
+    }
+}
+
 # 1. Kiểm tra câu hỏi có liên quan DB không
 def check_relevancy(state: AgentState) -> AgentState:
     q = state["question"]
@@ -16,211 +29,306 @@ def check_relevancy(state: AgentState) -> AgentState:
     """
     resp = llm.invoke(prompt).content.strip().lower()
     logger.info(f"Relevancy: {resp}")
-    return {**state, "relevancy": "relevant" if "relevant" in resp else "not_relevant"}
+    
+    relevancy = "not_relevant" if "not_relevant" in resp else "relevant"
+    logger.info(f"Setting relevancy to: {relevancy}")
+    
+    return {**state, "relevancy": relevancy}
 
-# 2. Chọn tool
-def select_tools(state: AgentState) -> AgentState:
+# 2. Planner LLM - Đánh giá câu hỏi và chọn tool
+def planner_llm(state: AgentState) -> AgentState:
+    relevancy = state.get("relevancy")
+    if relevancy != "relevant":
+        logger.warning(f"Planner LLM called with relevancy: {relevancy}, skipping...")
+        return state
+    
     q = state["question"]
-    tool_selection_prompt = f"""
-    You are a tool selector. Based on the user's question, choose the most appropriate tool.
+    iteration_count = state.get("iteration_count", 0)
+    execution_history = state.get("execution_history", [])
+    
+    has_schema = False
+    for exec_info in execution_history:
+        if exec_info.get("tool") == "list_tables" and not exec_info.get("error", False):
+            has_schema = True
+            break
+    
+    history_context = ""
+    if execution_history:
+        history_context = "\nPrevious tool executions:\n"
+        for i, exec_info in enumerate(execution_history):
+            history_context += f"Step {i+1}: {exec_info.get('tool', '')} -> {exec_info.get('result', '')[:200]}...\n"
+    
+    planner_prompt = f"""
+    You are a Planner LLM. Based on the user's question and execution history, choose the most appropriate tool.
     
     Available tools:
-    1. list_tables: Use when user asks for general table information, schema, or structure
-    2. query_sql: Use when user asks for specific data, calculations, rankings, or complex queries
+    {json.dumps(TOOL_METADATA, indent=2)}
     
     User question: "{q}"
+    Current iteration: {iteration_count + 1}
+    Schema already available: {has_schema}
+    {history_context}
     
-    Examples:
-    - "Show me all tables" → list_tables
-    - "What tables exist?" → list_tables  
-    - "Show me the schema" → list_tables
-    - "Top 5 tables with most columns" → query_sql
-    - "Count rows in each table" → query_sql
-    - "Get data from users table" → query_sql
-    - "Show sample data from tables" → query_sql
+    IMPORTANT RULES:
+    1. If list_tables has already been executed and schema is available, DO NOT choose list_tables again
+    2. If schema is available, prefer query_sql to get specific data
+    3. Only choose list_tables if no schema information is available yet
+    
+    Consider:
+    1. What information is needed to answer the user's question?
+    2. What tools have been executed before and what did they return?
+    3. Is additional information needed from the database?
     
     Respond with ONLY the tool name: "list_tables" or "query_sql"
     """
     
-    selected_tool = llm.invoke(tool_selection_prompt).content.strip().lower()
-    logger.info(f"LLM selected tool: {selected_tool}")
+    selected_tool = llm.invoke(planner_prompt).content.strip().lower()
+    logger.info(f"Planner LLM selected tool: {selected_tool}")
+    
+    if selected_tool == "list_tables" and has_schema:
+        logger.warning(f"Planner LLM selected list_tables but schema already available, overriding to query_sql")
+        selected_tool = "query_sql"
     
     if selected_tool not in ["list_tables", "query_sql"]:
         logger.warning(f"Invalid tool selection: {selected_tool}, defaulting to query_sql")
         selected_tool = "query_sql"
     
-    return {**state, "tools": [selected_tool]}
+    return {
+        **state, 
+        "selected_tool": selected_tool,
+        "tool_metadata": TOOL_METADATA[selected_tool]
+    }
 
-# 3. Thực thi tool
-def execute_tools(state: AgentState) -> AgentState:
-    results = []
-    schema_info = None
+# 3. Executor - Thực thi tool được chọn
+def executor(state: AgentState) -> AgentState:
+    relevancy = state.get("relevancy")
+    if relevancy != "relevant":
+        logger.warning(f"Executor called with relevancy: {relevancy}, skipping...")
+        return state
     
-    for t in state.get("tools", []):
-        if t == "list_tables":
-            results.append(list_tables_tool._run())
-        elif t == "query_sql":
-            if schema_info is None:
+    selected_tool = state["selected_tool"]
+    question = state["question"]
+    execution_history = state.get("execution_history", [])
+    tool_results = state.get("tool_results", [])
+    
+    logger.info(f"Executing tool: {selected_tool}")
+    
+    try:
+        if selected_tool == "list_tables":
+            result = list_tables_tool._run()
+        elif selected_tool == "query_sql":
+            schema_info = None
+            for exec_info in execution_history:
+                if exec_info.get("tool") == "list_tables":
+                    schema_info = exec_info.get("result")
+                    break
+            
+            if not schema_info:
                 try:
                     schema_info = list_tables_tool._run()
                 except Exception as e:
                     schema_info = f"Could not retrieve schema: {str(e)}"
             
-            prompt = f"""
-                You are a SQL generator. Convert the user question to a valid SQL SELECT query.
-                
-                Database Schema Information:
-                {schema_info}
-                
-                Rules:
-                - Only use SELECT statements
-                - No UPDATE, DELETE, DROP, or INSERT
-                - Use the exact table and column names from the schema above
-                - For "list all [table_name]" → SELECT * FROM [exact_table_name]
-                - Be precise with column names and table names from the schema
-                - If schema shows table names, use those exact names
-                - NEVER use UNION ALL with LIMIT in a single query
-                - For multiple tables, generate separate queries for each table
-                - Use LIMIT only on individual SELECT statements, not on UNION queries
-                - If user asks for "top 5 tables with most columns", use separate queries for each table
-                - You can generate multiple SQL statements separated by semicolons
-                - Each statement will be executed separately
-                
-                User question: "{state['question']}"
-                
-                Return ONLY the SQL query without explanations or markdown formatting.
-                """
-            sql = llm.invoke(prompt).content.strip()
+            sql_prompt = f"""
+            You are a SQL generator. Convert the user question to a valid SQL SELECT query.
+            
+            Database Schema Information:
+            {schema_info}
+            
+            Rules:
+            - Only use SELECT statements
+            - No UPDATE, DELETE, DROP, or INSERT
+            - Use the exact table and column names from the schema above
+            - For "list all [table_name]" → SELECT * FROM [exact_table_name]
+            - Be precise with column names and table names from the schema
+            - If schema shows table names, use those exact names
+            - NEVER use UNION ALL with LIMIT in a single query
+            - For multiple tables, generate separate queries for each table
+            - Use LIMIT only on individual SELECT statements, not on UNION queries
+            - If user asks for "top 5 tables with most columns", use separate queries for each table
+            - You can generate multiple SQL statements separated by semicolons
+            - Each statement will be executed separately
+            
+            User question: "{question}"
+            
+            Return ONLY the SQL query without explanations or markdown formatting.
+            """
+            
+            sql = llm.invoke(sql_prompt).content.strip()
             if sql.startswith("```sql"):
                 sql = sql.replace("```sql", "").replace("```", "").strip()
             elif sql.startswith("```"):
                 sql = sql.replace("```", "").strip()
             
             logger.info(f"Generated SQL: {sql}")
-            try:
-                result = query_sql_tool._run(sql)
-                results.append(result)
-            except Exception as e:
-                results.append(f"❌ SQL Error: {str(e)}")
-    return {**state, "tool_results": results}
+            result = query_sql_tool._run(sql)
+        else:
+            result = f"Unknown tool: {selected_tool}"
+            
+        new_execution_history = execution_history + [{
+            "tool": selected_tool,
+            "result": result,
+            "iteration": state.get("iteration_count", 0) + 1
+        }]
+        
+        new_tool_results = tool_results + [result]
+        
+        logger.info(f"Tool execution successful: {selected_tool}")
+        
+        return {
+            **state,
+            "tool_results": new_tool_results,
+            "execution_history": new_execution_history
+        }
+        
+    except Exception as e:
+        error_msg = f"Tool execution failed: {str(e)}"
+        logger.error(f"Tool execution error: {error_msg}")
+        
+        new_execution_history = execution_history + [{
+            "tool": selected_tool,
+            "result": error_msg,
+            "iteration": state.get("iteration_count", 0) + 1,
+            "error": True
+        }]
+        
+        return {
+            **state,
+            "execution_history": new_execution_history
+        }
 
-# 4. Sinh câu trả lời
-def generate_answer(state: AgentState) -> AgentState:
-    context = state.get("tool_results", "")
-    q = state["question"]
-    prompt = f"User asked: {q}\nDatabase results: {context}\nGive a concise answer."
-    answer = llm.invoke(prompt).content
-    logger.info(f"Generated Answer: {answer}")
-    return {**state, "answer": answer}
-
-# 5. Kiểm tra response có chuẩn với câu hỏi hay không
-def validate_response(state: AgentState) -> AgentState:
-    question = state["question"]
-    answer = state.get("answer", "")
-    tool_results = state.get("tool_results", [])
+# 4. Evaluator LLM - Đánh giá kết quả có đủ chưa
+def evaluator_llm(state: AgentState) -> AgentState:
+    relevancy = state.get("relevancy")
+    if relevancy != "relevant":
+        logger.warning(f"Evaluator LLM called with relevancy: {relevancy}, skipping...")
+        return state
     
-    # Tạo prompt để LLM đánh giá response
-    validation_prompt = f"""
-    You are a response validator. Evaluate if the generated answer properly addresses the user's question.
+    question = state["question"]
+    tool_results = state.get("tool_results", [])
+    execution_history = state.get("execution_history", [])
+    iteration_count = state.get("iteration_count", 0)
+    max_iterations = state.get("max_iterations", 5)
+    
+    all_results = "\n".join([str(result) for result in tool_results])
+    
+    has_schema = False
+    schema_available = False
+    for exec_info in execution_history:
+        if exec_info.get("tool") == "list_tables" and not exec_info.get("error", False):
+            has_schema = True
+            schema_available = True
+            break
+    
+    # Kiểm tra xem có query_sql lặp lại không
+    query_sql_count = 0
+    recent_queries = []
+    for exec_info in execution_history:
+        if exec_info.get("tool") == "query_sql" and not exec_info.get("error", False):
+            query_sql_count += 1
+            # Lấy SQL query từ result (nếu có)
+            result = exec_info.get("result", "")
+            if "SELECT" in result:
+                recent_queries.append(result[:100])
+    
+    has_repetitive_queries = len(set(recent_queries)) < len(recent_queries) if recent_queries else False
+    
+    evaluator_prompt = f"""
+        You are an Evaluator LLM. Assess whether the current results adequately answer the user's question.
+
+        User Question: "{question}"
+        Current Results: {all_results}
+        Iteration: {iteration_count + 1}/{max_iterations}
+        
+        IMPORTANT: Analysis
+        - Has list_tables been executed: {has_schema}
+        - Schema is available: {schema_available}
+        - Query SQL executed count: {query_sql_count}
+        - Has repetitive queries: {has_repetitive_queries}
+        
+        CRITICAL RULES:
+        1. If list_tables has already been executed and schema is available, do not request list_tables again
+        2. If query_sql has been executed multiple times with similar results, consider it complete
+        3. If the same SQL queries are being repeated, mark as complete
+        4. If query_sql_count >= 3, likely complete
+        5. Only mark as incomplete if genuinely new information is needed
+        
+        EVALUATION CRITERIA:
+        - Does the current data answer the user's question?
+        - Are we getting repetitive results?
+        - Would additional queries provide genuinely new information?
+        
+        Respond with ONLY one word:
+        - "complete" (if the question is answered or results are repetitive)
+        - "incomplete" (if genuinely new information is needed)
+        """
+    
+    evaluation_result = llm.invoke(evaluator_prompt).content.strip().lower()
+    if evaluation_result.startswith("complete"):
+        is_complete = True
+    elif evaluation_result.startswith("incomplete"):
+        is_complete = False
+    else:
+        is_complete = False
+    
+    if iteration_count >= max_iterations:
+        logger.warning(f"Max iterations reached ({max_iterations}), forcing complete")
+        is_complete = True
+    
+    if has_repetitive_queries and query_sql_count >= 2:
+        logger.warning(f"Repetitive queries detected, forcing complete")
+        is_complete = True
+    
+    if query_sql_count >= 3:
+        logger.warning(f"Too many query_sql executions ({query_sql_count}), forcing complete")
+        is_complete = True
+    
+    logger.info(f"Evaluator LLM result: {evaluation_result}")
+    logger.info(f"Assessment: {'Complete' if is_complete else 'Incomplete'}")
+    
+    return {
+        **state,
+        "is_complete": is_complete,
+        "evaluation_reason": evaluation_result,
+        "iteration_count": iteration_count + 1
+    }
+
+# 5. Final Answer Generator - Kết hợp reasoning và kết quả cuối
+def final_answer_generator(state: AgentState) -> AgentState:
+    question = state["question"]
+    tool_results = state.get("tool_results", [])
+    execution_history = state.get("execution_history", [])
+    
+    all_results = "\n".join([str(result) for result in tool_results])
+    
+    final_prompt = f"""
+    You are a Final Answer Generator. Create a comprehensive, natural language answer.
     
     User Question: "{question}"
-    Database Results: {tool_results}
-    Generated Answer: "{answer}"
+    Database Results: {all_results}
     
-    Check if:
-    1. The answer directly addresses the user's question
-    2. The answer uses the database results appropriately
-    3. The answer is complete and informative
-    4. The answer doesn't contain errors or misleading information
+    Execution History:
+    {json.dumps(execution_history, indent=2)}
     
-    Respond with ONLY: "valid" or "invalid"
-    If invalid, also provide a brief reason why.
+    Requirements:
+    1. Provide a clear, direct answer to the user's question
+    2. Use natural language reasoning to explain the results
+    3. Include relevant data from the database results
+    4. Make the answer informative and easy to understand
+    5. If there are multiple results, synthesize them coherently
+    
+    Generate a comprehensive final answer that combines natural language reasoning with the database results.
     """
     
-    validation_result = llm.invoke(validation_prompt).content.strip().lower()
-    is_valid = "valid" in validation_result
+    final_answer = llm.invoke(final_prompt).content
+    logger.info(f"Generated final answer: {final_answer[:200]}...")
     
-    logger.info(f"Response validation: {validation_result}")
-    logger.info(f"Validation passed: {is_valid}")
-    
-    return {**state, "validation_passed": is_valid}
+    return {
+        **state,
+        "final_answer": final_answer
+    }
 
-# 6. Ép sinh SQL lại nếu response không chuẩn
-def regenerate_sql(state: AgentState) -> AgentState:
-    question = state["question"]
-    current_attempts = state.get("sql_attempts", 0)
-    max_attempts = 3
-    
-    if current_attempts >= max_attempts:
-        logger.warning(f"Max SQL regeneration attempts reached ({max_attempts})")
-        return {**state, "validation_passed": True}
-    
-    try:
-        schema_info = list_tables_tool._run()
-    except Exception as e:
-        schema_info = f"Could not retrieve schema: {str(e)}"
-    
-    improved_prompt = f"""
-    You are an expert SQL generator. The previous attempt failed validation. 
-    Generate a better SQL query based on the feedback.
-    
-    Database Schema Information:
-    {schema_info}
-    
-    User question: "{question}"
-    Previous attempt number: {current_attempts + 1}
-    
-    Rules:
-    - Only use SELECT statements
-    - No UPDATE, DELETE, DROP, or INSERT
-    - Use exact table and column names from schema
-    - Be more precise and comprehensive
-    - Consider all relevant tables and relationships
-    - For "list all [table_name]" → SELECT * FROM [exact_table_name]
-    - NEVER use UNION ALL with LIMIT in a single query
-    - For multiple tables, generate separate queries for each table
-    - Use LIMIT only on individual SELECT statements, not on UNION queries
-    - If user asks for "top 5 tables with most columns", use separate queries for each table
-    - You can generate multiple SQL statements separated by semicolons
-    - Each statement will be executed separately
-    
-    Return ONLY the SQL query without explanations or markdown formatting.
-    """
-    
-    sql = llm.invoke(improved_prompt).content.strip()
-    if sql.startswith("```sql"):
-        sql = sql.replace("```sql", "").replace("```", "").strip()
-    elif sql.startswith("```"):
-        sql = sql.replace("```", "").strip()
-    
-    logger.info(f"Regenerated SQL (attempt {current_attempts + 1}): {sql}")
-    
-    try:
-        result = query_sql_tool._run(sql)
-        new_tool_results = [result]
-        logger.info(f"Regenerated SQL executed successfully")
-        
-        # Tạo answer mới với kết quả SQL mới
-        context = new_tool_results
-        answer_prompt = f"User asked: {question}\nDatabase results: {context}\nGive a concise answer."
-        new_answer = llm.invoke(answer_prompt).content
-        
-        return {
-            **state, 
-            "tool_results": new_tool_results,
-            "answer": new_answer,
-            "sql_attempts": current_attempts + 1,
-            "validation_passed": None
-        }
-    except Exception as e:
-        logger.error(f"Regenerated SQL failed: {str(e)}")
-        return {
-            **state, 
-            "sql_attempts": current_attempts + 1,
-            "validation_passed": None
-        }
-
-# 5. Funny response khi không liên quan DB
+# 6. Funny response khi không liên quan DB
 def funny_response(state: AgentState) -> AgentState:
     q = state["question"]
-    return {**state, "answer": f"😂 Câu hỏi '{q}' không liên quan database rồi!"}
+    return {**state, "final_answer": f"😂 Câu hỏi '{q}' không liên quan database rồi!"}

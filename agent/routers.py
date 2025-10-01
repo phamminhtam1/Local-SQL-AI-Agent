@@ -2,28 +2,27 @@ from .state import AgentState
 from langgraph.graph import END
 
 def relevance_router(state: AgentState):
-    return "select_tools" if state["relevancy"] == "relevant" else "funny_response"
-
-def execute_tools_router(state: AgentState):
-    if state.get("tool_results"):
-        return "generate_answer"
-    return END
-
-def validation_router(state: AgentState):
-    validation_passed = state.get("validation_passed")
+    """Router sau khi kiểm tra relevance"""
+    relevancy = state.get("relevancy")
+    print(f"DEBUG: relevance_router - relevancy: {relevancy}")
+    print(f"DEBUG: relevance_router - state keys: {list(state.keys())}")
     
-    if validation_passed is True:
-        return END
-    elif validation_passed is False:
-        return "regenerate_sql"
+    if relevancy == "relevant":
+        print("DEBUG: Routing to planner_llm")
+        return "planner_llm"
     else:
-        return END
+        print("DEBUG: Routing to funny_response")
+        return "funny_response"
 
-def regenerate_router(state: AgentState):
-    sql_attempts = state.get("sql_attempts", 0)
-    max_attempts = 3
+def evaluator_router(state: AgentState):
+    """Router sau khi Evaluator LLM đánh giá kết quả"""
+    is_complete = state.get("is_complete")
+    iteration_count = state.get("iteration_count", 0)
+    max_iterations = state.get("max_iterations", 5)
     
-    if sql_attempts >= max_attempts:
-        return END
+    # Nếu đã đủ hoặc đã hết số lần lặp
+    if is_complete or iteration_count >= max_iterations:
+        return "final_answer_generator"
     else:
-        return "validate_response"
+        # Nếu chưa đủ, quay lại Planner LLM để chọn tool tiếp theo
+        return "planner_llm"

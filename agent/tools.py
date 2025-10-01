@@ -3,7 +3,6 @@ import os
 from langchain.tools import BaseTool
 from langchain_community.utilities.sql_database import SQLDatabase
 
-# DB connection (MySQL/Postgres tuỳ URI trong .env)
 DB_URI = os.getenv("DB_URI")
 # Ensure UTF-8 encoding for MySQL connection
 if DB_URI and "mysql" in DB_URI.lower():
