@@ -20,15 +20,36 @@ def check_relevancy(state: AgentState) -> AgentState:
 
 # 2. Chọn tool
 def select_tools(state: AgentState) -> AgentState:
-    q = state["question"].lower()
-    # Nếu hỏi về schema/tables thì dùng list_tables
-    if any(word in q for word in ["table", "schema", "structure", "show tables"]):
-        logger.info(f"Selecting list_tables")
-        return {**state, "tools": ["list_tables"]}
-    # Nếu hỏi về dữ liệu cụ thể thì dùng query_sql
-    else:
-        logger.info(f"Selecting query_sql")
-        return {**state, "tools": ["query_sql"]}
+    q = state["question"]
+    tool_selection_prompt = f"""
+    You are a tool selector. Based on the user's question, choose the most appropriate tool.
+    
+    Available tools:
+    1. list_tables: Use when user asks for general table information, schema, or structure
+    2. query_sql: Use when user asks for specific data, calculations, rankings, or complex queries
+    
+    User question: "{q}"
+    
+    Examples:
+    - "Show me all tables" → list_tables
+    - "What tables exist?" → list_tables  
+    - "Show me the schema" → list_tables
+    - "Top 5 tables with most columns" → query_sql
+    - "Count rows in each table" → query_sql
+    - "Get data from users table" → query_sql
+    - "Show sample data from tables" → query_sql
+    
+    Respond with ONLY the tool name: "list_tables" or "query_sql"
+    """
+    
+    selected_tool = llm.invoke(tool_selection_prompt).content.strip().lower()
+    logger.info(f"LLM selected tool: {selected_tool}")
+    
+    if selected_tool not in ["list_tables", "query_sql"]:
+        logger.warning(f"Invalid tool selection: {selected_tool}, defaulting to query_sql")
+        selected_tool = "query_sql"
+    
+    return {**state, "tools": [selected_tool]}
 
 # 3. Thực thi tool
 def execute_tools(state: AgentState) -> AgentState:
@@ -58,6 +79,12 @@ def execute_tools(state: AgentState) -> AgentState:
                 - For "list all [table_name]" → SELECT * FROM [exact_table_name]
                 - Be precise with column names and table names from the schema
                 - If schema shows table names, use those exact names
+                - NEVER use UNION ALL with LIMIT in a single query
+                - For multiple tables, generate separate queries for each table
+                - Use LIMIT only on individual SELECT statements, not on UNION queries
+                - If user asks for "top 5 tables with most columns", use separate queries for each table
+                - You can generate multiple SQL statements separated by semicolons
+                - Each statement will be executed separately
                 
                 User question: "{state['question']}"
                 
@@ -150,6 +177,12 @@ def regenerate_sql(state: AgentState) -> AgentState:
     - Be more precise and comprehensive
     - Consider all relevant tables and relationships
     - For "list all [table_name]" → SELECT * FROM [exact_table_name]
+    - NEVER use UNION ALL with LIMIT in a single query
+    - For multiple tables, generate separate queries for each table
+    - Use LIMIT only on individual SELECT statements, not on UNION queries
+    - If user asks for "top 5 tables with most columns", use separate queries for each table
+    - You can generate multiple SQL statements separated by semicolons
+    - Each statement will be executed separately
     
     Return ONLY the SQL query without explanations or markdown formatting.
     """
