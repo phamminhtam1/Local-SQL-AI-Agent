@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 from langgraph.checkpoint.memory import MemorySaver
-
+from langchain_mcp_adapters.tools import load_mcp_tools
 
 load_dotenv()
 SSE_URL = "http://127.0.0.1:5050/sse"
