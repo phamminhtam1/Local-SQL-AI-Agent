@@ -1,6 +1,6 @@
 from typing import TypedDict, Optional, Any, List, Dict
-
-class AgentState(TypedDict):
+from langgraph.graph import MessagesState
+class AgentState(MessagesState):
     question: str
     relevancy: Optional[str]   # "relevant" | "not_relevant"
     

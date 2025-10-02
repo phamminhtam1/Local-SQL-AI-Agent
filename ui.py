@@ -29,8 +29,15 @@ if prompt := st.chat_input("Nhập câu hỏi về database..."):
 
     with st.chat_message("assistant"):
         with st.spinner("Đang xử lý..."):
-            result = app.invoke({"question": prompt})
+            result = app.invoke({"question": prompt},config={
+            "configurable": {
+            "thread_id": "main_thread",
+            "checkpoint_ns": "default_ns",
+            "checkpoint_id": "session_1"
+        }
+    })
             answer = result.get("final_answer", "❌ No answer")
+            print(answer)
             # tool_results = result.get("tool_results")
             # if isinstance(tool_results, list):
             #     for r in tool_results:
