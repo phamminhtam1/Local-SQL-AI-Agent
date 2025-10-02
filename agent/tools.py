@@ -1,7 +1,26 @@
 import re
 import os
+import json
 from langchain.tools import BaseTool
 from langchain_community.utilities.sql_database import SQLDatabase
+
+TOOL_METADATA = {
+    "list_tables": {
+        "name": "list_tables",
+        "description": "List all tables in the database with schema and sample rows",
+        "use_case": "Use when user asks for general table information, schema, or structure"
+    },
+    "query_sql": {
+        "name": "query_sql", 
+        "description": "Execute SQL SELECT queries to get specific data",
+        "use_case": "Use when user asks for specific data, calculations, rankings, or complex queries"
+    },
+    "list_tools": {
+        "name": "list_tools",
+        "description": "List all available tools with their descriptions and use case",
+        "use_case": "Use when user asks for available tools or tool descriptions"
+    }
+}
 
 DB_URI = os.getenv("DB_URI")
 # Ensure UTF-8 encoding for MySQL connection
@@ -58,6 +77,18 @@ class QuerySQLTool(BaseTool):
     async def _arun(self, query: str) -> str:
         return self._run(query)
 
+class ListToolsTool(BaseTool):
+    name: str = "list_tools"
+    description: str = "List all available tools with their descriptions and use case"
+
+    def _run(self, query: str = "") -> str:
+        return json.dumps(TOOL_METADATA, indent=2)
+
+    async def _arun(self, query: str = "") -> str:
+        return self._run(query)
+
+
 list_tables_tool = ListTablesTool()
 query_sql_tool = QuerySQLTool()
+list_tools_tool = ListToolsTool()
 

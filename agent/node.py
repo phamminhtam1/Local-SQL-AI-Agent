@@ -1,38 +1,23 @@
 import json
 from langchain_openai import ChatOpenAI
 from .state import AgentState
-from .tools import list_tables_tool, query_sql_tool
+from .tools import list_tables_tool, query_sql_tool, list_tools_tool, TOOL_METADATA
 import logging
 logger = logging.getLogger(__name__)
 
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
-
-TOOL_METADATA = {
-    "list_tables": {
-        "name": "list_tables",
-        "description": "List all tables in the database with schema and sample rows",
-        "use_case": "Use when user asks for general table information, schema, or structure"
-    },
-    "query_sql": {
-        "name": "query_sql", 
-        "description": "Execute SQL SELECT queries to get specific data",
-        "use_case": "Use when user asks for specific data, calculations, rankings, or complex queries"
-    }
-}
 
 # 1. Kiểm tra câu hỏi có liên quan DB không
 def check_relevancy(state: AgentState) -> AgentState:
     q = state["question"]
     prompt = f"""
     You are a classifier. User question: "{q}"
-    If related to SQL/Database, respond 'relevant', else 'not_relevant'.
+    If related to SQL/Database, respond 'relevant', else 'not_relevant', if user asks for available tools or tool descriptions, respond 'relevant'.
     """
     resp = llm.invoke(prompt).content.strip().lower()
     logger.info(f"Relevancy: {resp}")
     
-    relevancy = "not_relevant" if "not_relevant" in resp else "relevant"
-    logger.info(f"Setting relevancy to: {relevancy}")
-    
+    relevancy = "not_relevant" if "not_relevant" in resp else "relevant"    
     return {**state, "relevancy": relevancy}
 
 # 2. Planner LLM - Đánh giá câu hỏi và chọn tool
@@ -60,7 +45,7 @@ def planner_llm(state: AgentState) -> AgentState:
     
     planner_prompt = f"""
     You are a Planner LLM. Based on the user's question and execution history, choose the most appropriate tool.
-    
+    If user asks for available tools or tool descriptions, choose "list_tools".
     Available tools:
     {json.dumps(TOOL_METADATA, indent=2)}
     
@@ -73,13 +58,14 @@ def planner_llm(state: AgentState) -> AgentState:
     1. If list_tables has already been executed and schema is available, DO NOT choose list_tables again
     2. If schema is available, prefer query_sql to get specific data
     3. Only choose list_tables if no schema information is available yet
+
     
     Consider:
     1. What information is needed to answer the user's question?
     2. What tools have been executed before and what did they return?
     3. Is additional information needed from the database?
     
-    Respond with ONLY the tool name: "list_tables" or "query_sql"
+    Respond with ONLY the tool name: "list_tables" or "query_sql" or "list_tools"
     """
     
     selected_tool = llm.invoke(planner_prompt).content.strip().lower()
@@ -89,7 +75,7 @@ def planner_llm(state: AgentState) -> AgentState:
         logger.warning(f"Planner LLM selected list_tables but schema already available, overriding to query_sql")
         selected_tool = "query_sql"
     
-    if selected_tool not in ["list_tables", "query_sql"]:
+    if selected_tool not in ["list_tables", "query_sql", "list_tools"]:
         logger.warning(f"Invalid tool selection: {selected_tool}, defaulting to query_sql")
         selected_tool = "query_sql"
     
@@ -162,6 +148,8 @@ def executor(state: AgentState) -> AgentState:
             
             logger.info(f"Generated SQL: {sql}")
             result = query_sql_tool._run(sql)
+        elif selected_tool == "list_tools":
+            result = list_tools_tool._run()
         else:
             result = f"Unknown tool: {selected_tool}"
             
@@ -172,7 +160,6 @@ def executor(state: AgentState) -> AgentState:
         }]
         
         new_tool_results = tool_results + [result]
-        
         logger.info(f"Tool execution successful: {selected_tool}")
         
         return {
@@ -331,4 +318,13 @@ def final_answer_generator(state: AgentState) -> AgentState:
 # 6. Funny response khi không liên quan DB
 def funny_response(state: AgentState) -> AgentState:
     q = state["question"]
-    return {**state, "final_answer": f"😂 Câu hỏi '{q}' không liên quan database rồi!"}
+    final_prompt = f"""
+    You are a Funny Response Generator. Create a funny response to the user's question.
+    
+    User Question: "{q}"
+    
+    Generate a funny response to the user's question.
+    """
+    final_answer = llm.invoke(final_prompt).content
+    logger.info(f"Generated funny response: {final_answer}")
+    return {**state, "final_answer": final_answer}
