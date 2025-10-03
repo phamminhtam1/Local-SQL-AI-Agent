@@ -11,8 +11,22 @@ llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 # 1. Kiểm tra câu hỏi có liên quan DB không
 def check_relevancy(state: AgentState) -> AgentState:
     q = state["question"]
+    chat_history = state.get("chat_history", [])
+    
+    chat_context = ""
+    if chat_history:
+        chat_context = "\nPrevious conversation:\n"
+        for msg in chat_history[-4:]:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if role == "user":
+                chat_context += f"User: {content}\n"
+            elif role == "assistant":
+                chat_context += f"Assistant: {content}\n"
+    
     prompt = f"""
     You are a classifier. User question: "{q}"
+    {chat_context}
     If related to SQL/Database, respond 'relevant', else 'not_relevant', if user asks for available tools or tool descriptions, respond 'relevant'.
     """
     resp = llm.invoke(prompt).content.strip().lower()
@@ -25,7 +39,6 @@ def check_relevancy(state: AgentState) -> AgentState:
 def planner_llm(state: AgentState) -> AgentState:
     relevancy = state.get("relevancy")
     if relevancy != "relevant":
-        logger.warning(f"Planner LLM called with relevancy: {relevancy}, skipping...")
         return state
     
     q = state["question"]
@@ -52,13 +65,13 @@ def planner_llm(state: AgentState) -> AgentState:
             if role == "user":
                 chat_context += f"User: {content}\n"
             elif role == "assistant":
-                chat_context += f"Assistant: {content[:300]}...\n"
+                chat_context += f"Assistant: {content}\n"
     
     history_context = ""
     if execution_history:
         history_context = "\nPrevious tool executions:\n"
         for i, exec_info in enumerate(execution_history):
-            history_context += f"Step {i+1}: {exec_info.get('tool', '')} -> {exec_info.get('result', '')[:200]}...\n"
+            history_context += f"Step {i+1}: {exec_info.get('tool', '')} -> {exec_info.get('result', '')}\n"
     
     # Kiểm tra xem có phải câu hỏi follow-up không
     is_follow_up = False
@@ -108,7 +121,7 @@ def planner_llm(state: AgentState) -> AgentState:
     3. Only choose list_tables if no schema information is available yet
     4. Use query_sql for database overview questions and statistics
     5. Use query_sql for relationship analysis and complex queries
-    6. Consider the conversation context - if user refers to previous results, use that information
+    6. Consider the Previous conversation - if user refers to previous results, use that information
     7. For follow-up questions, use query_sql to get data from previously mentioned tables
     
     Consider:
@@ -122,6 +135,7 @@ def planner_llm(state: AgentState) -> AgentState:
     """
     
     selected_tool = llm.invoke(planner_prompt).content.strip().lower()
+    logger.info(f"Prompt Node Planner LLM: {planner_prompt}")
     logger.info(f"Planner LLM selected tool: {selected_tool}")
     
     if selected_tool == "list_tables" and has_schema:
@@ -132,7 +146,7 @@ def planner_llm(state: AgentState) -> AgentState:
     if selected_tool not in valid_tools:
         logger.warning(f"Invalid tool selection: {selected_tool}, defaulting to query_sql")
         selected_tool = "query_sql"
-    
+
     return {
         **state, 
         "selected_tool": selected_tool,
@@ -179,7 +193,7 @@ def executor(state: AgentState) -> AgentState:
                     if role == "user":
                         chat_context_for_sql += f"User: {content}\n"
                     elif role == "assistant":
-                        chat_context_for_sql += f"Assistant: {content[:200]}...\n"
+                        chat_context_for_sql += f"Assistant: {content}\n"
             
             # Kiểm tra xem có phải follow-up question không
             is_follow_up_sql = False
@@ -238,7 +252,7 @@ def executor(state: AgentState) -> AgentState:
                 sql = sql.replace("```sql", "").replace("```", "").strip()
             elif sql.startswith("```"):
                 sql = sql.replace("```", "").strip()
-            
+            logger.info(f"Prompt Node Executor: {sql_prompt}")
             logger.info(f"Generated SQL: {sql}")
             result = query_sql_tool._run(sql)
         elif selected_tool == "list_tools":
@@ -289,6 +303,7 @@ def evaluator_llm(state: AgentState) -> AgentState:
     execution_history = state.get("execution_history", [])
     iteration_count = state.get("iteration_count", 0)
     max_iterations = state.get("max_iterations", 5)
+    chat_history = state.get("chat_history", [])
     
     all_results = "\n".join([str(result) for result in tool_results])
     
@@ -313,12 +328,24 @@ def evaluator_llm(state: AgentState) -> AgentState:
     
     has_repetitive_queries = len(set(recent_queries)) < len(recent_queries) if recent_queries else False
     
+    chat_context = ""
+    if chat_history:
+        chat_context = "\nPrevious conversation:\n"
+        for msg in chat_history[-4:]:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if role == "user":
+                chat_context += f"User: {content}\n"
+            elif role == "assistant":
+                chat_context += f"Assistant: {content}\n"
+    
     evaluator_prompt = f"""
         You are an Evaluator LLM. Assess whether the current results adequately answer the user's question.
 
         User Question: "{question}"
         Current Results: {all_results}
         Iteration: {iteration_count + 1}/{max_iterations}
+        {chat_context}
         
         IMPORTANT: Analysis
         - Has list_tables been executed: {has_schema}
@@ -391,7 +418,7 @@ def final_answer_generator(state: AgentState) -> AgentState:
             if role == "user":
                 chat_context += f"User: {content}\n"
             elif role == "assistant":
-                chat_context += f"Assistant: {content[:200]}...\n"
+                chat_context += f"Assistant: {content}\n"
     
     final_prompt = f"""
     You are a Final Answer Generator. Create a comprehensive, natural language answer.
@@ -415,7 +442,7 @@ def final_answer_generator(state: AgentState) -> AgentState:
     """
     
     final_answer = llm.invoke(final_prompt).content
-    logger.info(f"Generated final answer: {final_answer[:200]}...")
+    logger.info(f"Generated final answer: {final_answer}")
     
     new_chat_history = chat_history + [
         {"role": "user", "content": question},
@@ -433,10 +460,22 @@ def funny_response(state: AgentState) -> AgentState:
     q = state["question"]
     chat_history = state.get("chat_history", [])
     
+    chat_context = ""
+    if chat_history:
+        chat_context = "\nPrevious conversation:\n"
+        for msg in chat_history[-4:]:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if role == "user":
+                chat_context += f"User: {content}\n"
+            elif role == "assistant":
+                chat_context += f"Assistant: {content}\n"
+    
     final_prompt = f"""
     You are a Funny Response Generator. Create a funny response to the user's question.
     
     User Question: "{q}"
+    {chat_context}
     
     Generate a funny response to the user's question.
     """
