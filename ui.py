@@ -17,6 +17,8 @@ st.title("🗄️ LangGraph SQL Agent Demo")
 
 if "messages" not in st.session_state:
     st.session_state["messages"] = []
+if "chat_history" not in st.session_state:
+    st.session_state["chat_history"] = []
 
 for msg in st.session_state["messages"]:
     with st.chat_message(msg["role"]):
@@ -29,8 +31,17 @@ if prompt := st.chat_input("Nhập câu hỏi về database..."):
 
     with st.chat_message("assistant"):
         with st.spinner("Đang xử lý..."):
-            result = app.invoke({"question": prompt})
+            # Truyền chat_history vào agent state
+            result = app.invoke({
+                "question": prompt,
+                "chat_history": st.session_state["chat_history"]
+            })
             answer = result.get("final_answer", "❌ No answer")
+            
+            # Cập nhật chat_history từ agent result
+            if "chat_history" in result:
+                st.session_state["chat_history"] = result["chat_history"]
+            
             # tool_results = result.get("tool_results")
             # if isinstance(tool_results, list):
             #     for r in tool_results:

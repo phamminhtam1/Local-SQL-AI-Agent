@@ -1,4 +1,5 @@
 import json
+import asyncio
 from langchain_openai import ChatOpenAI
 from .state import AgentState
 from .tools import list_tables_tool, query_sql_tool, list_tools_tool, TOOL_METADATA
@@ -30,6 +31,11 @@ def planner_llm(state: AgentState) -> AgentState:
     q = state["question"]
     iteration_count = state.get("iteration_count", 0)
     execution_history = state.get("execution_history", [])
+    chat_history = state.get("chat_history", [])
+    
+    enhanced_tool_metadata = {
+        **TOOL_METADATA
+    }
     
     has_schema = False
     for exec_info in execution_history:
@@ -37,35 +43,82 @@ def planner_llm(state: AgentState) -> AgentState:
             has_schema = True
             break
     
+    chat_context = ""
+    if chat_history:
+        chat_context = "\nPrevious conversation:\n"
+        for msg in chat_history[-6:]:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if role == "user":
+                chat_context += f"User: {content}\n"
+            elif role == "assistant":
+                chat_context += f"Assistant: {content[:300]}...\n"
+    
     history_context = ""
     if execution_history:
         history_context = "\nPrevious tool executions:\n"
         for i, exec_info in enumerate(execution_history):
             history_context += f"Step {i+1}: {exec_info.get('tool', '')} -> {exec_info.get('result', '')[:200]}...\n"
     
-    planner_prompt = f"""
-    You are a Planner LLM. Based on the user's question and execution history, choose the most appropriate tool.
-    If user asks for available tools or tool descriptions, choose "list_tools".
-    Available tools:
-    {json.dumps(TOOL_METADATA, indent=2)}
+    # Kiểm tra xem có phải câu hỏi follow-up không
+    is_follow_up = False
+    follow_up_context = ""
+    if chat_history:
+        follow_up_keywords = [
+            "those", "these", "them", "they", "it", "this", "that", "which", "what",
+            "previous", "recent", "last", "before", "earlier", "mentioned", "above", "listed",
+            "shown", "displayed", "returned", "found", "identified", "discovered",
+            "sample", "examples", "instances", "records", "rows", "data", "content",
+            "show", "display", "get", "fetch", "retrieve", "extract", "pull",
+            "some", "few", "several", "all", "each", "every", "any", "first", "last",
+            "top", "bottom", "most", "least", "highest", "lowest",
+            "now", "next", "then", "also", "additionally", "furthermore", "moreover",
+            "analyze", "examine", "investigate", "explore", "check", "verify", "confirm",
+            "compare", "contrast", "relate", "connect", "link", "associate"
+        ]
+        q_lower = q.lower()
+        for keyword in follow_up_keywords:
+            if keyword in q_lower:
+                is_follow_up = True
+                break
+        
+        if len(q.split()) <= 5 and chat_history:
+            is_follow_up = True
+        
+        if is_follow_up:
+            follow_up_context = "\nFOLLOW-UP QUESTION DETECTED: This appears to be a follow-up question. Use previous conversation context to understand what the user is referring to."
     
-    User question: "{q}"
+    planner_prompt = f"""
+    You are a Planner LLM. Based on the user's question, conversation history, and execution history, choose the most appropriate tool.
+    
+    Available tools:
+    {json.dumps(enhanced_tool_metadata, indent=2)}
+    
+    Current user question: "{q}"
     Current iteration: {iteration_count + 1}
     Schema already available: {has_schema}
+    Is follow-up question: {is_follow_up}
+    {follow_up_context}
+    {chat_context}
     {history_context}
     
     IMPORTANT RULES:
     1. If list_tables has already been executed and schema is available, DO NOT choose list_tables again
     2. If schema is available, prefer query_sql to get specific data
     3. Only choose list_tables if no schema information is available yet
-
+    4. Use query_sql for database overview questions and statistics
+    5. Use query_sql for relationship analysis and complex queries
+    6. Consider the conversation context - if user refers to previous results, use that information
+    7. For follow-up questions, use query_sql to get data from previously mentioned tables
     
     Consider:
     1. What information is needed to answer the user's question?
     2. What tools have been executed before and what did they return?
     3. Is additional information needed from the database?
+    4. Does the user's question reference previous results or context?
+    5. If this is a follow-up question, what tables were mentioned in previous conversation?
     
-    Respond with ONLY the tool name: "list_tables" or "query_sql" or "list_tools"
+    Respond with ONLY the tool name: "list_tables", "query_sql", or "list_tools"
     """
     
     selected_tool = llm.invoke(planner_prompt).content.strip().lower()
@@ -75,14 +128,15 @@ def planner_llm(state: AgentState) -> AgentState:
         logger.warning(f"Planner LLM selected list_tables but schema already available, overriding to query_sql")
         selected_tool = "query_sql"
     
-    if selected_tool not in ["list_tables", "query_sql", "list_tools"]:
+    valid_tools = ["list_tables", "query_sql", "list_tools"]
+    if selected_tool not in valid_tools:
         logger.warning(f"Invalid tool selection: {selected_tool}, defaulting to query_sql")
         selected_tool = "query_sql"
     
     return {
         **state, 
         "selected_tool": selected_tool,
-        "tool_metadata": TOOL_METADATA[selected_tool]
+        "tool_metadata": enhanced_tool_metadata[selected_tool]
     }
 
 # 3. Executor - Thực thi tool được chọn
@@ -96,6 +150,7 @@ def executor(state: AgentState) -> AgentState:
     question = state["question"]
     execution_history = state.get("execution_history", [])
     tool_results = state.get("tool_results", [])
+    chat_history = state.get("chat_history", [])
     
     logger.info(f"Executing tool: {selected_tool}")
     
@@ -115,11 +170,44 @@ def executor(state: AgentState) -> AgentState:
                 except Exception as e:
                     schema_info = f"Could not retrieve schema: {str(e)}"
             
+            chat_context_for_sql = ""
+            if chat_history:
+                chat_context_for_sql = "\nPrevious conversation context:\n"
+                for msg in chat_history[-4:]:
+                    role = msg.get("role", "")
+                    content = msg.get("content", "")
+                    if role == "user":
+                        chat_context_for_sql += f"User: {content}\n"
+                    elif role == "assistant":
+                        chat_context_for_sql += f"Assistant: {content[:200]}...\n"
+            
+            # Kiểm tra xem có phải follow-up question không
+            is_follow_up_sql = False
+            if chat_history:
+                follow_up_keywords = [
+                    "those", "these", "them", "they", "it", "this", "that", "which", "what",
+                    "previous", "recent", "last", "before", "earlier", "mentioned", "above", "listed",
+                    "shown", "displayed", "returned", "found", "identified", "discovered",
+                    "sample", "examples", "instances", "records", "rows", "data", "content",
+                    "show", "display", "get", "fetch", "retrieve", "extract", "pull",
+                    "some", "few", "several", "all", "each", "every", "any", "first", "last",
+                    "top", "bottom", "most", "least", "highest", "lowest",
+                    "now", "next", "then", "also", "additionally", "furthermore", "moreover",
+                    "analyze", "examine", "investigate", "explore", "check", "verify", "confirm",
+                    "compare", "contrast", "relate", "connect", "link", "associate"
+                ]
+                q_lower = question.lower()
+                for keyword in follow_up_keywords:
+                    if keyword in q_lower:
+                        is_follow_up_sql = True
+                        break
+            
             sql_prompt = f"""
             You are a SQL generator. Convert the user question to a valid SQL SELECT query.
             
             Database Schema Information:
             {schema_info}
+            {chat_context_for_sql}
             
             Rules:
             - Only use SELECT statements
@@ -134,8 +222,13 @@ def executor(state: AgentState) -> AgentState:
             - If user asks for "top 5 tables with most columns", use separate queries for each table
             - You can generate multiple SQL statements separated by semicolons
             - Each statement will be executed separately
+            - If user refers to previous results (like "those tables", "the tables mentioned"), use the context from previous conversation
+            - If user asks for sample data from previously mentioned tables, generate queries for those specific tables
+            - For follow-up questions about "sample data", use LIMIT 5 to get sample rows
+            - If user asks for "5 rows", use LIMIT 5
             
-            User question: "{question}"
+            Current user question: "{question}"
+            Is follow-up question: {is_follow_up_sql}
             
             Return ONLY the SQL query without explanations or markdown formatting.
             """
@@ -285,14 +378,27 @@ def final_answer_generator(state: AgentState) -> AgentState:
     question = state["question"]
     tool_results = state.get("tool_results", [])
     execution_history = state.get("execution_history", [])
+    chat_history = state.get("chat_history", [])
     
     all_results = "\n".join([str(result) for result in tool_results])
+    
+    chat_context = ""
+    if chat_history:
+        chat_context = "\nPrevious conversation:\n"
+        for msg in chat_history[-4:]:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if role == "user":
+                chat_context += f"User: {content}\n"
+            elif role == "assistant":
+                chat_context += f"Assistant: {content[:200]}...\n"
     
     final_prompt = f"""
     You are a Final Answer Generator. Create a comprehensive, natural language answer.
     
-    User Question: "{question}"
+    Current User Question: "{question}"
     Database Results: {all_results}
+    {chat_context}
     
     Execution History:
     {json.dumps(execution_history, indent=2)}
@@ -303,6 +409,7 @@ def final_answer_generator(state: AgentState) -> AgentState:
     3. Include relevant data from the database results
     4. Make the answer informative and easy to understand
     5. If there are multiple results, synthesize them coherently
+    6. Consider the conversation context - if this is a follow-up question, reference previous results appropriately
     
     Generate a comprehensive final answer that combines natural language reasoning with the database results.
     """
@@ -310,14 +417,22 @@ def final_answer_generator(state: AgentState) -> AgentState:
     final_answer = llm.invoke(final_prompt).content
     logger.info(f"Generated final answer: {final_answer[:200]}...")
     
+    new_chat_history = chat_history + [
+        {"role": "user", "content": question},
+        {"role": "assistant", "content": final_answer}
+    ]
+    
     return {
         **state,
-        "final_answer": final_answer
+        "final_answer": final_answer,
+        "chat_history": new_chat_history
     }
 
 # 6. Funny response khi không liên quan DB
 def funny_response(state: AgentState) -> AgentState:
     q = state["question"]
+    chat_history = state.get("chat_history", [])
+    
     final_prompt = f"""
     You are a Funny Response Generator. Create a funny response to the user's question.
     
@@ -327,4 +442,14 @@ def funny_response(state: AgentState) -> AgentState:
     """
     final_answer = llm.invoke(final_prompt).content
     logger.info(f"Generated funny response: {final_answer}")
-    return {**state, "final_answer": final_answer}
+    
+    new_chat_history = chat_history + [
+        {"role": "user", "content": q},
+        {"role": "assistant", "content": final_answer}
+    ]
+    
+    return {
+        **state, 
+        "final_answer": final_answer,
+        "chat_history": new_chat_history
+    }
