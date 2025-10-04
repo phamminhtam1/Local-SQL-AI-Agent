@@ -1,12 +1,41 @@
 import json
+import re
 import asyncio
 from langchain_openai import ChatOpenAI
-from .state import AgentState
-from .tools import list_tables_tool, query_sql_tool, list_tools_tool, TOOL_METADATA
+from agent.state import AgentState
+from mcp_client import MCPClient
 import logging
 logger = logging.getLogger(__name__)
 
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+
+# Initialize MCP client
+mcp_client = MCPClient()
+
+def extract_text_from_result(result) -> str:
+    if hasattr(result, "content") and isinstance(result.content, list):
+        texts = []
+        for item in result.content:
+            if hasattr(item, "text"):
+                texts.append(item.text)
+        joined = "\n".join(texts)
+    elif isinstance(result, dict) and "content" in result:
+        joined = json.dumps(result["content"], ensure_ascii=False)
+    else:
+        joined = str(result)
+    return joined.strip()
+
+def clean_schema_text(raw_text: str) -> str:
+    if not raw_text:
+        return "No schema available."
+    text = extract_text_from_result(raw_text)
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+    tables = re.findall(r"CREATE TABLE.*?;\n", text, flags=re.DOTALL | re.IGNORECASE)
+    if tables:
+        cleaned = "\n\n".join(tables).strip()
+    else:
+        cleaned = text.strip()
+    return cleaned
 
 # 1. Kiểm tra câu hỏi có liên quan DB không
 def check_relevancy(state: AgentState) -> AgentState:
@@ -26,8 +55,19 @@ def check_relevancy(state: AgentState) -> AgentState:
     
     prompt = f"""
     You are a classifier. User question: "{q}"
-    {chat_context}
-    If related to SQL/Database, respond 'relevant', else 'not_relevant', if user asks for available tools or tool descriptions, respond 'relevant'.
+    Relevant conversation: {chat_context}
+    
+    Classify as 'relevant' if:
+    1. The question is about SQL/Database data, queries, tables, or schema
+    2. The question asks about available tools, tool descriptions, or system capabilities
+    3. The question asks "how many tools", "what tools", "list tools", or similar tool-related queries
+    4. The question is about database support, database tools, or system functionality
+    
+    Classify as 'not_relevant' if:
+    - The question is completely unrelated to databases or system tools
+    - The question is about general topics not related to the database system
+    
+    Respond with 'relevant' or 'not_relevant'.
     """
     resp = llm.invoke(prompt).content.strip().lower()
     logger.info(f"Relevancy: {resp}")
@@ -36,7 +76,7 @@ def check_relevancy(state: AgentState) -> AgentState:
     return {**state, "relevancy": relevancy}
 
 # 2. Planner LLM - Đánh giá câu hỏi và chọn tool
-def planner_llm(state: AgentState) -> AgentState:
+async def planner_llm(state: AgentState) -> AgentState:
     relevancy = state.get("relevancy")
     if relevancy != "relevant":
         return state
@@ -46,9 +86,29 @@ def planner_llm(state: AgentState) -> AgentState:
     execution_history = state.get("execution_history", [])
     chat_history = state.get("chat_history", [])
     
-    enhanced_tool_metadata = {
-        **TOOL_METADATA
-    }
+    # Get available tools from MCP server
+    if not mcp_client.connected:
+        await mcp_client.connect()
+    
+    available_tools = await mcp_client.get_available_tools()
+    enhanced_tool_metadata = {}
+    if available_tools:
+        for tool in available_tools:
+            try:
+                tool_dict = tool.model_dump() if hasattr(tool, "model_dump") else dict(tool)
+                name = tool_dict.get("name", "")
+                desc = tool_dict.get("description", "")
+                inputs = list(tool_dict.get("inputSchema", {}).get("properties", {}).keys())
+                outputs = list(tool_dict.get("outputSchema", {}).get("properties", {}).keys())
+
+                enhanced_tool_metadata[name] = {
+                    "name": name,
+                    "description": desc.strip(),
+                    "inputs": inputs,
+                    "outputs": outputs
+                }
+            except Exception as e:
+                logger.warning(f"Error parsing tool metadata: {e}")
     
     has_schema = False
     for exec_info in execution_history:
@@ -70,8 +130,12 @@ def planner_llm(state: AgentState) -> AgentState:
     history_context = ""
     if execution_history:
         history_context = "\nPrevious tool executions:\n"
-        for i, exec_info in enumerate(execution_history):
-            history_context += f"Step {i+1}: {exec_info.get('tool', '')} -> {exec_info.get('result', '')}\n"
+        for i, exec_info in enumerate(execution_history, start=1):
+            tool_name = exec_info.get("tool", "")
+            result_obj = exec_info.get("result", "")
+            result_text = extract_text_from_result(result_obj)
+            history_context += f"Step {i}: {tool_name}\n{result_text}\n\n"
+
     
     # Kiểm tra xem có phải câu hỏi follow-up không
     is_follow_up = False
@@ -105,7 +169,7 @@ def planner_llm(state: AgentState) -> AgentState:
     You are a Planner LLM. Based on the user's question, conversation history, and execution history, choose the most appropriate tool.
     
     Available tools:
-    {json.dumps(enhanced_tool_metadata, indent=2)}
+    {json.dumps(enhanced_tool_metadata, indent=2, ensure_ascii=False)}
     
     Current user question: "{q}"
     Current iteration: {iteration_count + 1}
@@ -131,7 +195,7 @@ def planner_llm(state: AgentState) -> AgentState:
     4. Does the user's question reference previous results or context?
     5. If this is a follow-up question, what tables were mentioned in previous conversation?
     
-    Respond with ONLY the tool name: "list_tables", "query_sql", or "list_tools"
+    Respond with ONLY the tool name from the available tools above.
     """
     
     selected_tool = llm.invoke(planner_prompt).content.strip().lower()
@@ -142,7 +206,7 @@ def planner_llm(state: AgentState) -> AgentState:
         logger.warning(f"Planner LLM selected list_tables but schema already available, overriding to query_sql")
         selected_tool = "query_sql"
     
-    valid_tools = ["list_tables", "query_sql", "list_tools"]
+    valid_tools = list(enhanced_tool_metadata.keys())
     if selected_tool not in valid_tools:
         logger.warning(f"Invalid tool selection: {selected_tool}, defaulting to query_sql")
         selected_tool = "query_sql"
@@ -150,11 +214,11 @@ def planner_llm(state: AgentState) -> AgentState:
     return {
         **state, 
         "selected_tool": selected_tool,
-        "tool_metadata": enhanced_tool_metadata[selected_tool]
+        "tool_metadata": enhanced_tool_metadata.get(selected_tool, {})
     }
 
 # 3. Executor - Thực thi tool được chọn
-def executor(state: AgentState) -> AgentState:
+async def executor(state: AgentState) -> AgentState:
     relevancy = state.get("relevancy")
     if relevancy != "relevant":
         logger.warning(f"Executor called with relevancy: {relevancy}, skipping...")
@@ -169,32 +233,51 @@ def executor(state: AgentState) -> AgentState:
     logger.info(f"Executing tool: {selected_tool}")
     
     try:
+        if not mcp_client.connected:
+            await mcp_client.connect()
+        
         if selected_tool == "list_tables":
-            result = list_tables_tool._run()
+            result = await mcp_client.call_tool("list_tables", {})
         elif selected_tool == "query_sql":
             schema_info = None
             for exec_info in execution_history:
-                if exec_info.get("tool") == "list_tables":
+                if exec_info.get("tool") == "list_tables" and not exec_info.get("error"):
                     schema_info = exec_info.get("result")
                     break
-            
+
             if not schema_info:
                 try:
-                    schema_info = list_tables_tool._run()
+                    schema_info = await mcp_client.call_tool("list_tables", {})
                 except Exception as e:
                     schema_info = f"Could not retrieve schema: {str(e)}"
+
+            schema_info = clean_schema_text(schema_info)
             
             chat_context_for_sql = ""
             if chat_history:
-                chat_context_for_sql = "\nPrevious conversation context:\n"
-                for msg in chat_history[-4:]:
+                recent_msgs = chat_history[-6:]
+                formatted_pairs = []
+                pair_index = 1
+                current_pair = {}
+
+                for msg in recent_msgs:
                     role = msg.get("role", "")
                     content = msg.get("content", "")
                     if role == "user":
-                        chat_context_for_sql += f"User: {content}\n"
-                    elif role == "assistant":
-                        chat_context_for_sql += f"Assistant: {content}\n"
-            
+                        current_pair = {"index": pair_index, "user": content}
+                    elif role == "assistant" and current_pair:
+                        current_pair["assistant"] = content
+                        formatted_pairs.append(current_pair)
+                        pair_index += 1
+                        current_pair = {}
+
+                chat_context_for_sql = (
+                    "\nPrevious conversation context:\n"
+                    + json.dumps(formatted_pairs, indent=2, ensure_ascii=False)
+                )
+            else:
+                chat_context_for_sql = ""
+
             # Kiểm tra xem có phải follow-up question không
             is_follow_up_sql = False
             if chat_history:
@@ -221,26 +304,33 @@ def executor(state: AgentState) -> AgentState:
             
             Database Schema Information:
             {schema_info}
-            {chat_context_for_sql}
             
             Rules:
-            - Only use SELECT statements
-            - No UPDATE, DELETE, DROP, or INSERT
-            - Use the exact table and column names from the schema above
-            - For "list all [table_name]" → SELECT * FROM [exact_table_name]
-            - Be precise with column names and table names from the schema
-            - If schema shows table names, use those exact names
-            - NEVER use UNION ALL with LIMIT in a single query
-            - For multiple tables, generate separate queries for each table
-            - Use LIMIT only on individual SELECT statements, not on UNION queries
-            - If user asks for "top 5 tables with most columns", use separate queries for each table
-            - You can generate multiple SQL statements separated by semicolons
-            - Each statement will be executed separately
-            - If user refers to previous results (like "those tables", "the tables mentioned"), use the context from previous conversation
-            - If user asks for sample data from previously mentioned tables, generate queries for those specific tables
-            - For follow-up questions about "sample data", use LIMIT 5 to get sample rows
-            - If user asks for "5 rows", use LIMIT 5
+            - Use only SELECT statements.
+            - Never use UPDATE, DELETE, DROP, or INSERT.
+            - Always use exact table and column names from the provided schema.
+            - For requests like "list all [table]" → SELECT * FROM [exact_table_name].
+            - For multi-table questions, you may generate separate SELECT queries (each separated by semicolons).
+            - Each SQL statement will be executed separately.
+            - Do not include explanations or markdown formatting — return only raw SQL.
+
+            Context handling:
+            - If the user’s question refers to previous results (e.g., “those”, “these”, “mentioned before”, “the above”, “the previous ones”):
+            → Reuse relevant context from earlier queries or conversation to identify what “those” refers to.
+            → This may include table names, IDs, or data subsets mentioned earlier.
+            → Only do this if it is clearly implied from context.
+
+            - If the user asks to sort, filter, or analyze something that was previously listed:
+            → Apply ORDER BY, WHERE, or aggregation clauses using the same tables/columns previously used.
+
+            - When the reference is ambiguous, infer the most likely table or data scope from the recent conversation and previous SQL results.
+
+            - Do not assume specific ID values or row data unless clearly provided in the context.
+
             
+
+            Previous conversation:
+            {chat_context_for_sql}
             Current user question: "{question}"
             Is follow-up question: {is_follow_up_sql}
             
@@ -254,15 +344,14 @@ def executor(state: AgentState) -> AgentState:
                 sql = sql.replace("```", "").strip()
             logger.info(f"Prompt Node Executor: {sql_prompt}")
             logger.info(f"Generated SQL: {sql}")
-            result = query_sql_tool._run(sql)
-        elif selected_tool == "list_tools":
-            result = list_tools_tool._run()
+            result = await mcp_client.call_tool("query_sql", {"sql": sql})
         else:
             result = f"Unknown tool: {selected_tool}"
             
+        clean_result = extract_text_from_result(result)
         new_execution_history = execution_history + [{
             "tool": selected_tool,
-            "result": result,
+            "result": clean_result,
             "iteration": state.get("iteration_count", 0) + 1
         }]
         
@@ -323,7 +412,7 @@ def evaluator_llm(state: AgentState) -> AgentState:
             query_sql_count += 1
             # Lấy SQL query từ result (nếu có)
             result = exec_info.get("result", "")
-            if "SELECT" in result:
+            if result and "SELECT" in result:
                 recent_queries.append(result[:100])
     
     has_repetitive_queries = len(set(recent_queries)) < len(recent_queries) if recent_queries else False
@@ -373,8 +462,6 @@ def evaluator_llm(state: AgentState) -> AgentState:
     evaluation_result = llm.invoke(evaluator_prompt).content.strip().lower()
     if evaluation_result.startswith("complete"):
         is_complete = True
-    elif evaluation_result.startswith("incomplete"):
-        is_complete = False
     else:
         is_complete = False
     

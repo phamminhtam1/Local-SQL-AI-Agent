@@ -3,6 +3,8 @@ import logging
 import sys
 import pandas as pd
 from app import build_app
+import asyncio
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,10 +34,10 @@ if prompt := st.chat_input("Nhập câu hỏi về database..."):
     with st.chat_message("assistant"):
         with st.spinner("Đang xử lý..."):
             # Truyền chat_history vào agent state
-            result = app.invoke({
+            result = asyncio.run(app.ainvoke({
                 "question": prompt,
                 "chat_history": st.session_state["chat_history"]
-            })
+            }))
             answer = result.get("final_answer", "❌ No answer")
             
             # Cập nhật chat_history từ agent result

@@ -2,6 +2,9 @@ import os
 import re
 from fastmcp import FastMCP
 from langchain_community.utilities.sql_database import SQLDatabase
+import logging
+
+logger = logging.getLogger(__name__)
 
 mcp = FastMCP("SQL Agent MCP Server")
 
@@ -11,15 +14,21 @@ if DB_URI and "mysql" in DB_URI.lower():
         DB_URI += "?charset=utf8mb4"
     elif "charset" not in DB_URI:
         DB_URI += "&charset=utf8mb4"
-
+logger.info(f"DB_URI: {DB_URI}")
 db = SQLDatabase.from_uri(DB_URI)
 
-@mcp.tool()
+@mcp.tool
 def list_tables() -> str:
+    """name:List all tables in the database with schema
+       description:List all tables in the database with schema
+    """
     return db.get_table_info()
 
-@mcp.tool()
+@mcp.tool
 def query_sql(sql: str) -> str:
+    """name:Execute SQL SELECT queries to get specific data
+       description:Execute SQL SELECT queries to get specific data
+    """
     statements = [stmt.strip() for stmt in sql.split(';') if stmt.strip()]
     if not statements:
         return "No valid SQL statements found"
@@ -50,4 +59,4 @@ def query_sql(sql: str) -> str:
 
 
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    mcp.run(transport='http', host='0.0.0.0', port=8000)
