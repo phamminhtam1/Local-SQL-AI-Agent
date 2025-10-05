@@ -34,12 +34,11 @@ You MUST use the available tools to search for information. Do not provide gener
 - search_web: Search the web for current information. Use this FIRST for any research question.
 - extract_content_from_webpage: Extract full content from a specific webpage URL.
 
-## Example
-User asks: "What is the current Bitcoin price?"
-You should:
-1. Call search_web with query "current Bitcoin price 2024"
-2. Analyze the results
-3. Provide the current price based on the search results
+## How to Use
+1. Analyze the user's question to understand what information they need
+2. Create an appropriate search query based on their actual question
+3. Use search_web with a relevant query that matches their question
+4. Analyze the results and provide a comprehensive answer
 """
 
 
@@ -66,6 +65,7 @@ def search_web(query: str, num_results: int = 3):
             })
         
         print(f"✅ search_web returning {len(formatted_result['result'])} results")
+        logger.info(f"search_web result: {formatted_result}")
         return formatted_result
     except Exception as e:
         print(f"❌ search_web error: {e}")

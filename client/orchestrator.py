@@ -68,7 +68,11 @@ async def run_db_agent(question: str, chat_history: List[Dict] = None) -> Dict[s
 async def run_search_agent(question: str, chat_history: List[Dict] = None) -> Dict[str, Any]:
     try:
         logger.info("Running Search agent...")
-        result = await search_agent.ainvoke({"question": question, "chat_history": chat_history or [], "max_iterations": 3})
+        # Convert question to messages format for search agent
+        from langchain_core.messages import HumanMessage
+        messages = [HumanMessage(content=question)]
+        
+        result = await search_agent.ainvoke({"messages": messages})
         return result
     except Exception as e:
         logger.error(f"Search agent error: {e}")
@@ -185,6 +189,8 @@ async def plan_task_for_agents(question: str, chat_history: List[Dict] = None, i
     raw = llm.invoke(prompt).content.strip()
     try:
         raw = raw.replace("```json", "").replace("```", "").strip()
+
+        logger.info(f"Plan Task: {raw}")
         return json.loads(raw)
     except Exception:
         logger.warning("Failed to parse plan_task JSON.")
@@ -204,6 +210,7 @@ async def orchestrate(question: str, chat_history: List[Dict] = None) -> Dict[st
 
     plan = await plan_task_for_agents(question, state.chat_history, state.iteration_info)
     db_q, search_q = plan.get("database_question", ""), plan.get("search_question", "")
+    logger.info(f"DB Question: {db_q}, Search Question: {search_q}")
 
     if relevance in ["database", "relevance"] and db_q:
         state.db_agent_result = await run_db_agent(db_q, state.chat_history)

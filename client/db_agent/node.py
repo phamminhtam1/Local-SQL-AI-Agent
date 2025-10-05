@@ -168,7 +168,7 @@ async def planner_llm(state: AgentState) -> AgentState:
     """
     
     selected_tool = llm.invoke(planner_prompt).content.strip().lower()
-    logger.info(f"Prompt Node Planner LLM: {planner_prompt}")
+    # logger.info(f"Prompt Node Planner LLM: {planner_prompt}")
     logger.info(f"Planner LLM selected tool: {selected_tool}")
     
     if selected_tool == "list_tables" and has_schema:
@@ -307,7 +307,7 @@ async def executor(state: AgentState) -> AgentState:
                 sql = sql.replace("```sql", "").replace("```", "").strip()
             elif sql.startswith("```"):
                 sql = sql.replace("```", "").strip()
-            logger.info(f"Prompt Node Executor: {sql_prompt}")
+            # logger.info(f"Prompt Node Executor: {sql_prompt}")
             logger.info(f"Generated SQL: {sql}")
             result = await mcp_client.call_tool("query_sql", {"sql": sql})
         else:
