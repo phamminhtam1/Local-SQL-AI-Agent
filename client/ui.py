@@ -44,19 +44,6 @@ if prompt := st.chat_input("Nhập câu hỏi (database, search, hoặc cả hai
             # Cập nhật chat_history từ orchestrator result
             if "chat_history" in result:
                 st.session_state["chat_history"] = result["chat_history"]
-            
-            if result.get("db_result") and result["db_result"].get("tool_results"):
-                with st.expander("📊 Database Results", expanded=False):
-                    tool_results = result["db_result"]["tool_results"]
-                    for i, r in enumerate(tool_results):
-                        if isinstance(r, list):
-                            try:
-                                df = pd.DataFrame(r)
-                                if not df.empty:
-                                    st.dataframe(df)
-                            except Exception as e:
-                                logger.error(f"Error converting DB result to DataFrame: {e}")
-                                st.text(str(r))
 
             st.markdown(answer)
             st.session_state["messages"].append(
