@@ -27,7 +27,7 @@ COPY . .
 RUN useradd --create-home --shell /bin/bash app && chown -R app:app /app
 USER app
 
-# Expose ports for both MCP servers
+# Expose the port the MCP server runs on
 EXPOSE 8001
 EXPOSE 8002
 
