@@ -13,17 +13,26 @@ llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 mcp_client = MCPClient()
 
 def extract_text_from_result(result) -> str:
+    """Extract readable text from MCP CallToolResult or similar response."""
+    if hasattr(result, "data") and isinstance(result.data, str) and result.data.strip():
+        return result.data.strip()
     if hasattr(result, "content") and isinstance(result.content, list):
         texts = []
         for item in result.content:
-            if hasattr(item, "text"):
+            if hasattr(item, "text") and item.text:
                 texts.append(item.text)
-        joined = "\n".join(texts)
-    elif isinstance(result, dict) and "content" in result:
-        joined = json.dumps(result["content"], ensure_ascii=False)
-    else:
-        joined = str(result)
-    return joined.strip()
+        if texts:
+            return "\n".join(texts).strip()
+    if hasattr(result, "structured_content"):
+        sc = result.structured_content
+        if isinstance(sc, dict):
+            for k in ("result", "content", "data"):
+                if k in sc and isinstance(sc[k], str):
+                    return sc[k].strip()
+            return json.dumps(sc, ensure_ascii=False)
+    if isinstance(result, dict):
+        return json.dumps(result, ensure_ascii=False)
+    return str(result).strip()
 
 # 1. Planner LLM - Đánh giá câu hỏi và chọn tool
 async def planner_llm(state: SearchAgentState) -> SearchAgentState:
@@ -89,13 +98,12 @@ async def planner_llm(state: SearchAgentState) -> SearchAgentState:
     
     IMPORTANT RULES:
     1. Choose web_search for general web search queries
-    2. Choose document_search for searching within documents
-    3. Choose news_search for current news and events
-    4. Consider the user's intent and the type of information they need
+    2. Choose news_search for current news and events
+    3. Consider the user's intent and the type of information they need
     
     Consider:
     1. What type of information is the user looking for?
-    2. Is it a general web search, document search, or news search?
+    2. Is it a general web search or news search?
     3. What tools have been executed before and what did they return?
     4. Is additional search needed?
     
@@ -133,8 +141,6 @@ async def executor(state: SearchAgentState) -> SearchAgentState:
         
         if selected_tool == "web_search":
             result = await mcp_client.call_tool("web_search", {"query": question})
-        elif selected_tool == "document_search":
-            result = await mcp_client.call_tool("document_search", {"query": question})
         elif selected_tool == "news_search":
             result = await mcp_client.call_tool("news_search", {"query": question})
         else:
@@ -149,6 +155,7 @@ async def executor(state: SearchAgentState) -> SearchAgentState:
         
         new_tool_results = tool_results + [result]
         logger.info(f"Search tool execution successful: {selected_tool}")
+        logger.info(f"Search tool execution result: {clean_result}")
         
         return {
             **state,
@@ -187,7 +194,7 @@ def evaluator_llm(state: SearchAgentState) -> SearchAgentState:
     # Count search executions
     search_count = 0
     for exec_info in execution_history:
-        if exec_info.get("tool") in ["web_search", "document_search", "news_search"] and not exec_info.get("error", False):
+        if exec_info.get("tool") in ["web_search", "news_search"] and not exec_info.get("error", False):
             search_count += 1
     
     chat_context = ""
