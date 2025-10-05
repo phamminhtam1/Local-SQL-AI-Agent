@@ -4,7 +4,7 @@ class AgentState(TypedDict):
     question: str
     relevancy: Optional[str]   # "relevant" | "not_relevant"
     
-     # Chat History
+    # Chat History
     chat_history: Optional[List[Dict]]  # Lịch sử trò chuyện: [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
     
     # Planner LLM
