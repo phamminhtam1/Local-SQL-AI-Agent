@@ -11,3 +11,6 @@ pymysql>=1.1.0
 
 # Search dependencies
 duckduckgo-search>=6.0.0
+
+fastapi>=0.115.0
+

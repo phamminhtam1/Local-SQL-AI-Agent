@@ -7,305 +7,260 @@ from db_agent.app import build_app as build_db_app
 from search_agent.app import build_app as build_search_app
 
 logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
 class OrchestratorState:
     def __init__(self):
-        self.question = ""
-        self.relevance_check = None
-        self.db_agent_result = None
-        self.search_agent_result = None
-        self.verify_result = None
-        self.final_answer = None
-        self.retry_count = 0
-        self.max_retries = 3
-        self.chat_history = []
-        self.iteration_info = {}  # Thông tin về lý do retry và kết quả agents
+        self.question: str = ""
+        self.relevance_check: Optional[str] = None
+        self.db_agent_result: Optional[Dict[str, Any]] = None
+        self.search_agent_result: Optional[Dict[str, Any]] = None
+        self.verify_result: Optional[Dict[str, Any]] = None
+        self.final_answer: Optional[str] = None
+        self.chat_history: List[Dict[str, str]] = []
+        self.retry_count: int = 0
+        self.max_retries: int = 3
+        self.iteration_info: List[Dict[str, Any]] = []  # history of loops
 
-# Initialize agents
 db_agent = build_db_app()
 search_agent = build_search_app()
 
+def _build_chat_context(chat_history: List[Dict]) -> str:
+    if not chat_history:
+        return ""
+    context = "\nPrevious conversation:\n"
+    for msg in chat_history[-4:]:
+        role = msg.get("role")
+        content = msg.get("content")
+        context += f"{role}: {content}\n"
+    return context
+
 async def check_relevance(question: str, chat_history: List[Dict] = None) -> str:
-    """Check if question is relevant to database or search functionality"""
-    if chat_history is None:
-        chat_history = []
-    
-    chat_context = ""
-    if chat_history:
-        chat_context = "\nPrevious conversation:\n"
-        for msg in chat_history[-4:]:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            if role == "user":
-                chat_context += f"User: {content}\n"
-            elif role == "assistant":
-                chat_context += f"Assistant: {content}\n"
-    
+    chat_context = _build_chat_context(chat_history or [])
     prompt = f"""
-    You are a relevance classifier. User question: "{question}"
+    You are a relevance classifier.
+    User question: "{question}"
     {chat_context}
-    
-    Classify the question into one of these categories:
-    1. "database" - Questions about SQL, database queries, tables, schema, data analysis
-    2. "search" - Questions about web search, information retrieval, current events, news
-    3. "both" - Questions that might need both database and search capabilities
-    4. "neither" - Questions unrelated to database or search functionality
-    
-    Examples:
-    - "Show me all users" → database
-    - "Search for latest AI news" → search  
-    - "Find users and search for their company info" → both
-    - "What's the weather?" → neither
-    
-    Respond with ONLY one word: database, search, both, or neither.
+
+    Classify into one of: relevance, not_relevance.
+    Rules:
+    - "relevance": SQL, schema, data analysis
+    - "relevance": web, info retrieval, news
+    - "relevance": needs both
+    - "not_relevance": unrelated
+    Respond with ONE word only.
     """
-    
-    response = llm.invoke(prompt).content.strip().lower()
-    logger.info(f"Relevance check result: {response}")
-    return response
+    resp = llm.invoke(prompt).content.strip().lower()
+    logger.info(f"Relevance: {resp}")
+    return resp
 
 async def run_db_agent(question: str, chat_history: List[Dict] = None) -> Dict[str, Any]:
-    """Run database agent"""
     try:
         logger.info("Running DB agent...")
-        result = await db_agent.ainvoke({
-            "question": question,
-            "chat_history": chat_history or [],
-            "max_iterations": 3
-        })
-        logger.info("DB agent completed")
+        result = await db_agent.ainvoke({"question": question, "chat_history": chat_history or [], "max_iterations": 3})
         return result
     except Exception as e:
         logger.error(f"DB agent error: {e}")
-        return {"error": str(e), "final_answer": f"Database agent failed: {str(e)}"}
+        return {"error": str(e), "final_answer": f"Database agent failed: {e}"}
 
 async def run_search_agent(question: str, chat_history: List[Dict] = None) -> Dict[str, Any]:
-    """Run search agent"""
     try:
         logger.info("Running Search agent...")
-        result = await search_agent.ainvoke({
-            "question": question,
-            "chat_history": chat_history or [],
-            "max_iterations": 3
-        })
-        logger.info("Search agent completed")
+        # Convert question to messages format for search agent
+        from langchain_core.messages import HumanMessage
+        messages = [HumanMessage(content=question)]
+        
+        result = await search_agent.ainvoke({"messages": messages})
         return result
     except Exception as e:
         logger.error(f"Search agent error: {e}")
-        return {"error": str(e), "final_answer": f"Search agent failed: {str(e)}"}
+        return {"error": str(e), "final_answer": f"Search agent failed: {e}"}
 
-async def verify_answer(question: str, db_result: Dict[str, Any], search_result: Dict[str, Any], chat_history: List[Dict] = None) -> Dict[str, Any]:
-    """Verify if the combined results adequately answer the question"""
-    if chat_history is None:
-        chat_history = []
-    
-    chat_context = ""
-    if chat_history:
-        chat_context = "\nPrevious conversation:\n"
-        for msg in chat_history[-4:]:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            if role == "user":
-                chat_context += f"User: {content}\n"
-            elif role == "assistant":
-                chat_context += f"Assistant: {content}\n"
-    
+async def verify_answer(
+    question: str,
+    db_result: Dict[str, Any],
+    search_result: Dict[str, Any],
+    chat_history: List[Dict] = None,
+    previous_iterations: List[Dict] = None,
+) -> Dict[str, Any]:
+    chat_context = _build_chat_context(chat_history or [])
     db_answer = db_result.get("final_answer", "")
     search_answer = search_result.get("final_answer", "")
-    
+    previous_summary = ""
+
+    if previous_iterations:
+        summaries = [
+            f"Round {it['round']}: {it['verify_result'].get('reason', '')}"
+            for it in previous_iterations[-2:]
+        ]
+        previous_summary = "\nPrevious verification summary:\n" + "\n".join(summaries)
+
     prompt = f"""
-    You are an answer verifier. Evaluate if the provided answers adequately address the user's question.
-    
+    You are an answer verifier. Evaluate if the answers adequately address the question.
+
     User Question: "{question}"
     {chat_context}
-    
-    Database Agent Answer: {db_answer}
-    Search Agent Answer: {search_answer}
-    
-    Evaluation Criteria:
-    1. Does the database answer provide relevant data/information?
-    2. Does the search answer provide relevant information?
-    3. Are the answers comprehensive and complete?
-    4. Do the answers work well together?
-    5. Is any critical information missing?
-    
-    Respond with JSON format:
+    {previous_summary}
+
+    Database Answer: {db_answer}
+    Search Answer: {search_answer}
+
+    Respond with JSON:
     {{
         "is_adequate": true/false,
-        "reason": "explanation of why adequate or not",
-        "missing_info": "what information is missing if not adequate",
-        "suggestions": "suggestions for improvement if not adequate"
+        "reason": "why adequate or not",
+        "missing_info": "what info is missing if any",
+        "suggestions": "improvement advice"
     }}
     """
-    
-    response = llm.invoke(prompt).content.strip()
-    
+    raw = llm.invoke(prompt).content.strip()
     try:
-        # Try to parse JSON response
-        if response.startswith("```json"):
-            response = response.replace("```json", "").replace("```", "").strip()
-        elif response.startswith("```"):
-            response = response.replace("```", "").strip()
-        
-        result = json.loads(response)
-        return result
-    except json.JSONDecodeError:
-        logger.warning("Failed to parse verify_answer JSON, using fallback")
-        return {
-            "is_adequate": "adequate" in response.lower() or "yes" in response.lower(),
-            "reason": response,
-            "missing_info": "",
-            "suggestions": ""
-        }
+        raw = raw.replace("```json", "").replace("```", "").strip()
+        return json.loads(raw)
+    except Exception:
+        logger.warning("verify_answer JSON parse failed.")
+        return {"is_adequate": False, "reason": raw, "missing_info": "", "suggestions": ""}
 
-async def generate_final_answer(question: str, db_result: Dict[str, Any], search_result: Dict[str, Any], chat_history: List[Dict] = None) -> str:
-    """Generate final answer combining results from both agents"""
-    if chat_history is None:
-        chat_history = []
-    
-    chat_context = ""
-    if chat_history:
-        chat_context = "\nPrevious conversation:\n"
-        for msg in chat_history[-4:]:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            if role == "user":
-                chat_context += f"User: {content}\n"
-            elif role == "assistant":
-                chat_context += f"Assistant: {content}\n"
-    
+async def generate_final_answer(question, db_result, search_result, chat_history=None):
+    chat_context = _build_chat_context(chat_history or [])
     db_answer = db_result.get("final_answer", "")
     search_answer = search_result.get("final_answer", "")
-    
     prompt = f"""
-    You are a final answer generator. Create a comprehensive answer that combines information from both database and search results.
-    
-    User Question: "{question}"
+    You are a final answer generator.
+    Combine DB and Search results coherently to answer the question.
+
+    Question: "{question}"
     {chat_context}
-    
-    Database Results: {db_answer}
+
+    DB Results: {db_answer}
     Search Results: {search_answer}
-    
-    Requirements:
-    1. Provide a clear, direct answer to the user's question
-    2. Combine relevant information from both sources
-    3. Use natural language reasoning
-    4. Make the answer informative and easy to understand
-    5. If one source is more relevant, prioritize that information
-    6. Synthesize the information coherently
-    
-    Generate a comprehensive final answer.
+
+    Output a clear, concise, and informative final answer.
     """
-    
-    final_answer = llm.invoke(prompt).content
-    logger.info("Generated final answer")
-    return final_answer
+    return llm.invoke(prompt).content.strip()
 
 async def generate_funny_response(question: str, chat_history: List[Dict] = None) -> str:
-    """Generate funny response for irrelevant questions"""
-    if chat_history is None:
-        chat_history = []
+    prompt = f"You are a witty assistant. Make a humorous answer to: '{question}'"
+    return llm.invoke(prompt).content.strip()
+
+async def plan_task_for_agents(question: str, chat_history: List[Dict] = None, iteration_info: List[Dict] = None) -> Dict[str, str]:
+    chat_context = _build_chat_context(chat_history or [])
     
-    chat_context = ""
-    if chat_history:
-        chat_context = "\nPrevious conversation:\n"
-        for msg in chat_history[-4:]:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            if role == "user":
-                chat_context += f"User: {content}\n"
-            elif role == "assistant":
-                chat_context += f"Assistant: {content}\n"
+    iteration_context = ""
+    if iteration_info:
+        iteration_context = "\nPrevious attempts and their results:\n"
+        for i, iteration in enumerate(iteration_info[-3:], 1):
+            round_num = iteration.get("round", i)
+            db_result = iteration.get("db_result", {})
+            search_result = iteration.get("search_result", {})
+            verify_result = iteration.get("verify_result", {})
+            
+            iteration_context += f"\nRound {round_num}:\n"
+            if db_result:
+                iteration_context += f"  DB Result: {db_result.get('final_answer', 'No result')}...\n"
+            if search_result:
+                iteration_context += f"  Search Result: {search_result.get('final_answer', 'No result')}...\n"
+            if verify_result:
+                iteration_context += f"  Verification: {verify_result.get('reason', 'No reason')}\n"
+                if verify_result.get('missing_info'):
+                    iteration_context += f"  Missing: {verify_result.get('missing_info')}\n"
+                if verify_result.get('suggestions'):
+                    iteration_context += f"  Suggestions: {verify_result.get('suggestions')}\n"
     
     prompt = f"""
-    You are a funny response generator. Create a humorous response to the user's question.
-    
-    User Question: "{question}"
+    You are a task planner.
+    Analyze and split this question for DB or Search agent.
+
+    Question: "{question}"
     {chat_context}
-    
-    Generate a funny response to the user's question.
+    {iteration_context}
+
+    IMPORTANT: Consider the previous attempts and their results to avoid repeating the same mistakes.
+    Use the verification feedback to improve the planning strategy.
+
+    Respond in JSON:
+    {{
+      "database_question": "<question for DB agent or empty>",
+      "search_question": "<question for Search agent or empty>"
+    }}
     """
-    
-    funny_answer = llm.invoke(prompt).content
-    logger.info("Generated funny response")
-    return funny_answer
+    raw = llm.invoke(prompt).content.strip()
+    try:
+        raw = raw.replace("```json", "").replace("```", "").strip()
+
+        logger.info(f"Plan Task: {raw}")
+        return json.loads(raw)
+    except Exception:
+        logger.warning("Failed to parse plan_task JSON.")
+        return {"database_question": question, "search_question": ""}
 
 async def orchestrate(question: str, chat_history: List[Dict] = None) -> Dict[str, Any]:
-    """Main orchestration function"""
-    if chat_history is None:
-        chat_history = []
-    
-    logger.info(f"Orchestrating question: {question}")
-    relevance = await check_relevance(question, chat_history)
-    
-    if relevance == "neither":
-        funny_answer = await generate_funny_response(question, chat_history)
-        new_chat_history = chat_history + [
-            {"role": "user", "content": question},
-            {"role": "assistant", "content": funny_answer}
-        ]
-        return {
-            "final_answer": funny_answer,
-            "chat_history": new_chat_history,
-            "relevance": relevance
-        }
-    
-    db_result = None
-    search_result = None
-    if relevance in ["database", "both"]:
-        db_result = await run_db_agent(question, chat_history)
-    
-    if relevance in ["search", "both"]:
-        search_result = await run_search_agent(question, chat_history)
-    
-    verify_result = await verify_answer(question, db_result or {}, search_result or {}, chat_history)
-    retry_count = 0
-    max_retries = 3
-    
-    while retry_count < max_retries:
-        if verify_result.get("is_adequate", False):
-            final_answer = await generate_final_answer(question, db_result or {}, search_result or {}, chat_history)
-            new_chat_history = chat_history + [
-                {"role": "user", "content": question},
-                {"role": "assistant", "content": final_answer}
-            ]
-            return {
-                "final_answer": final_answer,
-                "chat_history": new_chat_history,
-                "relevance": relevance,
-                "db_result": db_result,
-                "search_result": search_result,
-                "verify_result": verify_result
-            }
-        else:
-            retry_count += 1
-            logger.info(f"Answer not adequate, retrying... (attempt {retry_count}/{max_retries})")
-            retry_instructions = verify_result.get("suggestions", "")
-            missing_info = verify_result.get("missing_info", "")
-            
-            retry_question = f"{question}\n\nAdditional requirements: {retry_instructions}\nMissing information needed: {missing_info}"
-            if relevance in ["database", "both"]:
-                db_result = await run_db_agent(retry_question, chat_history)
-            
-            if relevance in ["search", "both"]:
-                search_result = await run_search_agent(retry_question, chat_history)
-            
-            verify_result = await verify_answer(question, db_result or {}, search_result or {}, chat_history)
-    
-    logger.warning("Max retries reached, generating final answer with available results")
-    final_answer = await generate_final_answer(question, db_result or {}, search_result or {}, chat_history)
-    new_chat_history = chat_history + [
-        {"role": "user", "content": question},
-        {"role": "assistant", "content": final_answer}
-    ]
-    return {
-        "final_answer": final_answer,
-        "chat_history": new_chat_history,
-        "relevance": relevance,
-        "db_result": db_result,
-        "search_result": search_result,
-        "verify_result": verify_result,
-        "retry_count": retry_count
-    }
+    state = OrchestratorState()
+    state.question = question
+    state.chat_history = chat_history or []
 
+    logger.info(f" Orchestrating: {question}")
+    relevance = await check_relevance(question, state.chat_history)
+
+    if relevance == "not_relevance":
+        funny = await generate_funny_response(question, state.chat_history)
+        return {"final_answer": funny, "relevance": relevance}
+
+    plan = await plan_task_for_agents(question, state.chat_history, state.iteration_info)
+    db_q, search_q = plan.get("database_question", ""), plan.get("search_question", "")
+    logger.info(f"DB Question: {db_q}, Search Question: {search_q}")
+
+    if relevance in ["database", "relevance"] and db_q:
+        state.db_agent_result = await run_db_agent(db_q, state.chat_history)
+    if relevance in ["search", "relevance"] and search_q:
+        state.search_agent_result = await run_search_agent(search_q, state.chat_history)
+
+    while state.retry_count < state.max_retries:
+        state.verify_result = await verify_answer(
+            state.question,
+            state.db_agent_result or {},
+            state.search_agent_result or {},
+            state.chat_history,
+            state.iteration_info,
+        )
+
+        state.iteration_info.append({
+            "round": state.retry_count + 1,
+            "db_result": state.db_agent_result,
+            "search_result": state.search_agent_result,
+            "verify_result": state.verify_result,
+        })
+
+        if state.verify_result.get("is_adequate", False):
+            break
+
+        state.retry_count += 1
+        logger.info(f"Re-planning (attempt {state.retry_count}/{state.max_retries})")
+
+        suggestions = state.verify_result.get("suggestions", "")
+        missing = state.verify_result.get("missing_info", "")
+        enhanced_q = f"{question}\n\nConsider these improvements:\n{suggestions}\nMissing info: {missing}"
+
+        plan = await plan_task_for_agents(enhanced_q, state.chat_history, state.iteration_info)
+        db_q, search_q = plan.get("database_question", ""), plan.get("search_question", "")
+
+        if relevance in ["database", "relevance"] and db_q:
+            state.db_agent_result = await run_db_agent(db_q, state.chat_history)
+        if relevance in ["search", "relevance"] and search_q:
+            state.search_agent_result = await run_search_agent(search_q, state.chat_history)
+
+    state.final_answer = await generate_final_answer(
+        question, state.db_agent_result or {}, state.search_agent_result or {}, state.chat_history
+    )
+
+    return {
+        "final_answer": state.final_answer,
+        "relevance": relevance,
+        "verify_result": state.verify_result,
+        "iteration_info": state.iteration_info,
+        "retry_count": state.retry_count,
+        "db_result": state.db_agent_result,
+        "search_result": state.search_agent_result,
+    }

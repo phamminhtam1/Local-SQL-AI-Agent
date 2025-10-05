@@ -2,6 +2,7 @@ import os
 import re
 from fastmcp import FastMCP
 from langchain_community.utilities.sql_database import SQLDatabase
+from db_mcp_server import db_mcp
 import logging
 
 logger = logging.getLogger(__name__)

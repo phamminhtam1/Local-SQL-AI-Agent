@@ -1,10 +1,18 @@
 import json
+import os
 import re
 import asyncio
+from langchain_core.messages import SystemMessage
+from langgraph.graph import END, MessagesState, StateGraph
+from langgraph.prebuilt import ToolNode, create_react_agent
+from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from db_agent.state import AgentState
 from .mcp_client import MCPClient
 import logging
+from dotenv import load_dotenv
+
+load_dotenv()
 logger = logging.getLogger(__name__)
 
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
@@ -160,7 +168,7 @@ async def planner_llm(state: AgentState) -> AgentState:
     """
     
     selected_tool = llm.invoke(planner_prompt).content.strip().lower()
-    logger.info(f"Prompt Node Planner LLM: {planner_prompt}")
+    # logger.info(f"Prompt Node Planner LLM: {planner_prompt}")
     logger.info(f"Planner LLM selected tool: {selected_tool}")
     
     if selected_tool == "list_tables" and has_schema:
@@ -299,7 +307,7 @@ async def executor(state: AgentState) -> AgentState:
                 sql = sql.replace("```sql", "").replace("```", "").strip()
             elif sql.startswith("```"):
                 sql = sql.replace("```", "").strip()
-            logger.info(f"Prompt Node Executor: {sql_prompt}")
+            # logger.info(f"Prompt Node Executor: {sql_prompt}")
             logger.info(f"Generated SQL: {sql}")
             result = await mcp_client.call_tool("query_sql", {"sql": sql})
         else:

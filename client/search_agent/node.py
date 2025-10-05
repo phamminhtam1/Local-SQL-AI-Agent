@@ -1,339 +1,119 @@
 import json
-import re
+import os
 import asyncio
+from langchain_core.messages import SystemMessage
+from langgraph.graph import END, MessagesState, StateGraph
+from langgraph.prebuilt import ToolNode, create_react_agent
+from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
-from search_agent.state import SearchAgentState
-from .mcp_client import MCPClient
+from langchain_tavily import TavilySearch, TavilyExtract
 import logging
+from dotenv import load_dotenv
+
+load_dotenv()
 logger = logging.getLogger(__name__)
 
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+llm = ChatOpenAI(
+    name="Researcher",
+    model="gpt-4o-mini", 
+    api_key=os.getenv("OPENAI_API_KEY"),
+)
 
-# Initialize MCP client
-mcp_client = MCPClient()
+prompt = """
+## Role
+You are a research assistant. Your job is to help the user answer questions by performing research. 
+You MUST use the available tools to search for information. Do not provide generic answers.
 
-def extract_text_from_result(result) -> str:
-    if hasattr(result, "content") and isinstance(result.content, list):
-        texts = []
-        for item in result.content:
-            if hasattr(item, "text"):
-                texts.append(item.text)
-        joined = "\n".join(texts)
-    elif isinstance(result, dict) and "content" in result:
-        joined = json.dumps(result["content"], ensure_ascii=False)
-    else:
-        joined = str(result)
-    return joined.strip()
+## Instructions
+1. ALWAYS start by using the search_web tool to find current information
+2. If you need more details, use extract_content_from_webpage to get full content from relevant URLs
+3. Base your answer on the search results you find
+4. If you cannot find information, say so clearly
 
-# 1. Planner LLM - Đánh giá câu hỏi và chọn tool
-async def planner_llm(state: SearchAgentState) -> SearchAgentState:
-    
-    q = state["question"]
-    iteration_count = state.get("iteration_count", 0)
-    execution_history = state.get("execution_history", [])
-    chat_history = state.get("chat_history", [])
-    
-    if not mcp_client.connected:
-        await mcp_client.connect()
-    
-    available_tools = await mcp_client.get_available_tools()
-    enhanced_tool_metadata = {}
-    if available_tools:
-        for tool in available_tools:
-            try:
-                tool_dict = tool.model_dump() if hasattr(tool, "model_dump") else dict(tool)
-                name = tool_dict.get("name", "")
-                desc = tool_dict.get("description", "")
-                inputs = list(tool_dict.get("inputSchema", {}).get("properties", {}).keys())
-                outputs = list(tool_dict.get("outputSchema", {}).get("properties", {}).keys())
+## Available Tools
+- search_web: Search the web for current information. Use this FIRST for any research question.
+- extract_content_from_webpage: Extract full content from a specific webpage URL.
 
-                enhanced_tool_metadata[name] = {
-                    "name": name,
-                    "description": desc.strip(),
-                    "inputs": inputs,
-                    "outputs": outputs
-                }
-            except Exception as e:
-                logger.warning(f"Error parsing tool metadata: {e}")
-    
-    chat_context = ""
-    if chat_history:
-        chat_context = "\nPrevious conversation:\n"
-        for msg in chat_history[-6:]:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            if role == "user":
-                chat_context += f"User: {content}\n"
-            elif role == "assistant":
-                chat_context += f"Assistant: {content}\n"
-    
-    history_context = ""
-    if execution_history:
-        history_context = "\nPrevious tool executions:\n"
-        for i, exec_info in enumerate(execution_history, start=1):
-            tool_name = exec_info.get("tool", "")
-            result_obj = exec_info.get("result", "")
-            result_text = extract_text_from_result(result_obj)
-            history_context += f"Step {i}: {tool_name}\n{result_text}\n\n"
+## How to Use
+1. Analyze the user's question to understand what information they need
+2. Create an appropriate search query based on their actual question
+3. Use search_web with a relevant query that matches their question
+4. Analyze the results and provide a comprehensive answer
+"""
 
-    planner_prompt = f"""
-    You are a Search Planner LLM. Based on the user's question, choose the most appropriate search tool.
-    
-    Available tools:
-    {json.dumps(enhanced_tool_metadata, indent=2, ensure_ascii=False)}
-    
-    Current user question: "{q}"
-    Current iteration: {iteration_count + 1}
-    {chat_context}
-    {history_context}
-    
-    IMPORTANT RULES:
-    1. Choose web_search for general web search queries
-    2. Choose document_search for searching within documents
-    3. Choose news_search for current news and events
-    4. Consider the user's intent and the type of information they need
-    
-    Consider:
-    1. What type of information is the user looking for?
-    2. Is it a general web search, document search, or news search?
-    3. What tools have been executed before and what did they return?
-    4. Is additional search needed?
-    
-    Respond with ONLY the tool name from the available tools above.
-    """
-    
-    selected_tool = llm.invoke(planner_prompt).content.strip().lower()
-    logger.info(f"Search Planner LLM selected tool: {selected_tool}")
-    
-    valid_tools = list(enhanced_tool_metadata.keys())
-    if selected_tool not in valid_tools:
-        logger.warning(f"Invalid tool selection: {selected_tool}, defaulting to web_search")
-        selected_tool = "web_search"
 
-    return {
-        **state, 
-        "selected_tool": selected_tool,
-        "tool_metadata": enhanced_tool_metadata.get(selected_tool, {})
-    }
-
-# 2. Executor - Thực thi tool được chọn
-async def executor(state: SearchAgentState) -> SearchAgentState:
-    
-    selected_tool = state["selected_tool"]
-    question = state["question"]
-    execution_history = state.get("execution_history", [])
-    tool_results = state.get("tool_results", [])
-    chat_history = state.get("chat_history", [])
-    
-    logger.info(f"Executing search tool: {selected_tool}")
+@tool
+def search_web(query: str, num_results: int = 3):
+    """Search the web and get back a list of results."""
+    print(f"🔍 search_web called with query: '{query}', num_results: {num_results}")
     
     try:
-        if not mcp_client.connected:
-            await mcp_client.connect()
+        web_search = TavilySearch(max_results=min(num_results, 3), topic="general")
+        search_results = web_search.invoke({"query": query})
         
-        if selected_tool == "web_search":
-            result = await mcp_client.call_tool("web_search", {"query": question})
-        elif selected_tool == "document_search":
-            result = await mcp_client.call_tool("document_search", {"query": question})
-        elif selected_tool == "news_search":
-            result = await mcp_client.call_tool("news_search", {"query": question})
-        else:
-            result = await mcp_client.call_tool(selected_tool, {"query": question})
-            
-        clean_result = extract_text_from_result(result)
-        new_execution_history = execution_history + [{
-            "tool": selected_tool,
-            "result": clean_result,
-            "iteration": state.get("iteration_count", 0) + 1
-        }]
-        
-        new_tool_results = tool_results + [result]
-        logger.info(f"Search tool execution successful: {selected_tool}")
-        
-        return {
-            **state,
-            "tool_results": new_tool_results,
-            "execution_history": new_execution_history
+        print(f"📊 Search returned {len(search_results.get('results', []))} results")
+
+        formatted_result = {
+            "query": query,
+            "result": []
         }
+        for result in search_results["results"]:
+            formatted_result["result"].append({
+                "title": result["title"],
+                "url": result["url"],
+                "content": result["content"]
+            })
         
+        print(f"✅ search_web returning {len(formatted_result['result'])} results")
+        logger.info(f"search_web result: {formatted_result}")
+        return formatted_result
     except Exception as e:
-        error_msg = f"Search tool execution failed: {str(e)}"
-        logger.error(f"Search tool execution error: {error_msg}")
-        
-        new_execution_history = execution_history + [{
-            "tool": selected_tool,
-            "result": error_msg,
-            "iteration": state.get("iteration_count", 0) + 1,
-            "error": True
-        }]
-        
+        print(f"❌ search_web error: {e}")
         return {
-            **state,
-            "execution_history": new_execution_history
+            "query": query,
+            "result": [],
+            "error": str(e)
         }
 
-# 3. Evaluator LLM - Đánh giá kết quả có đủ chưa
-def evaluator_llm(state: SearchAgentState) -> SearchAgentState:
-    
-    question = state["question"]
-    tool_results = state.get("tool_results", [])
-    execution_history = state.get("execution_history", [])
-    iteration_count = state.get("iteration_count", 0)
-    max_iterations = state.get("max_iterations", 3)
-    chat_history = state.get("chat_history", [])
-    
-    all_results = "\n".join([str(result) for result in tool_results])
-    
-    # Count search executions
-    search_count = 0
-    for exec_info in execution_history:
-        if exec_info.get("tool") in ["web_search", "document_search", "news_search"] and not exec_info.get("error", False):
-            search_count += 1
-    
-    chat_context = ""
-    if chat_history:
-        chat_context = "\nPrevious conversation:\n"
-        for msg in chat_history[-4:]:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            if role == "user":
-                chat_context += f"User: {content}\n"
-            elif role == "assistant":
-                chat_context += f"Assistant: {content}\n"
-    
-    evaluator_prompt = f"""
-        You are a Search Evaluator LLM. Assess whether the current search results adequately answer the user's question.
+@tool
+def extract_content_from_webpage(url: str):
+    """Extract the content from a webpage."""
+    extractor = TavilyExtract()
+    results = extractor.invoke(input={"urls": [url]})["results"]
+    return results
 
-        User Question: "{question}"
-        Current Results: {all_results}
-        Iteration: {iteration_count + 1}/{max_iterations}
-        Search executions: {search_count}
-        {chat_context}
-        
-        EVALUATION CRITERIA:
-        - Does the current search data answer the user's question?
-        - Are the search results comprehensive and relevant?
-        - Would additional searches provide genuinely new information?
-        - Are we getting repetitive results?
-        
-        Respond with ONLY one word:
-        - "complete" (if the question is answered or results are comprehensive)
-        - "incomplete" (if genuinely new information is needed)
-        """
-    
-    evaluation_result = llm.invoke(evaluator_prompt).content.strip().lower()
-    if evaluation_result.startswith("complete"):
-        is_complete = True
-    else:
-        is_complete = False
-    
-    if iteration_count >= max_iterations:
-        logger.warning(f"Max iterations reached ({max_iterations}), forcing complete")
-        is_complete = True
-    
-    if search_count >= 2:
-        logger.warning(f"Too many search executions ({search_count}), forcing complete")
-        is_complete = True
-    
-    logger.info(f"Search Evaluator LLM result: {evaluation_result}")
-    logger.info(f"Assessment: {'Complete' if is_complete else 'Incomplete'}")
-    
-    return {
-        **state,
-        "is_complete": is_complete,
-        "evaluation_reason": evaluation_result,
-        "iteration_count": iteration_count + 1
-    }
+tools = [search_web, extract_content_from_webpage]
 
-# 4. Final Answer Generator - Kết hợp reasoning và kết quả cuối
-def final_answer_generator(state: SearchAgentState) -> SearchAgentState:
-    question = state["question"]
-    tool_results = state.get("tool_results", [])
-    execution_history = state.get("execution_history", [])
-    chat_history = state.get("chat_history", [])
+async def researcher(state: MessagesState):
+    research_agent = create_react_agent(llm, tools=tools)
+    # Invoke the agent with proper dict-shaped state and prepend the system message
+    messages = state.get("messages", [])
     
-    all_results = "\n".join([str(result) for result in tool_results])
+    # Debug: Print what we're sending to the agent
+    print(f"🔍 Sending to agent: {len(messages)} messages")
     
-    chat_context = ""
-    if chat_history:
-        chat_context = "\nPrevious conversation:\n"
-        for msg in chat_history[-4:]:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            if role == "user":
-                chat_context += f"User: {content}\n"
-            elif role == "assistant":
-                chat_context += f"Assistant: {content}\n"
+    agent_state = await research_agent.ainvoke({
+        "messages": [SystemMessage(content=prompt)] + messages
+    })
     
-    final_prompt = f"""
-    You are a Search Final Answer Generator. Create a comprehensive, natural language answer based on search results.
+    # Debug: Print the agent's response
+    print(f"🤖 Agent response: {len(agent_state['messages'])} messages")
+    if agent_state["messages"]:
+        last_message = agent_state["messages"][-1]
+        print(f"📝 Last message type: {type(last_message)}")
+        if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
+            print(f"🔧 Tool calls: {len(last_message.tool_calls)}")
+            for i, tool_call in enumerate(last_message.tool_calls):
+                print(f"  Tool {i+1}: {tool_call['name']}")
     
-    Current User Question: "{question}"
-    Search Results: {all_results}
-    {chat_context}
-    
-    Execution History:
-    {json.dumps(execution_history, indent=2)}
-    
-    Requirements:
-    1. Provide a clear, direct answer to the user's question
-    2. Use natural language reasoning to explain the search results
-    3. Include relevant information from the search results
-    4. Make the answer informative and easy to understand
-    5. If there are multiple results, synthesize them coherently
-    6. Consider the conversation context - if this is a follow-up question, reference previous results appropriately
-    
-    Generate a comprehensive final answer that combines natural language reasoning with the search results.
-    """
-    
-    final_answer = llm.invoke(final_prompt).content
-    logger.info(f"Generated search final answer: {final_answer}")
-    
-    new_chat_history = chat_history + [
-        {"role": "user", "content": question},
-        {"role": "assistant", "content": final_answer}
-    ]
-    
-    return {
-        **state,
-        "final_answer": final_answer,
-        "chat_history": new_chat_history
-    }
+    # Return only the latest assistant message to append to MessagesState
+    return {"messages": [agent_state["messages"][-1]]}
 
-# 5. Funny response (không cần thiết nữa vì orchestrator xử lý)
-def funny_response(state: SearchAgentState) -> SearchAgentState:
-    q = state["question"]
-    chat_history = state.get("chat_history", [])
-    
-    chat_context = ""
-    if chat_history:
-        chat_context = "\nPrevious conversation:\n"
-        for msg in chat_history[-4:]:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            if role == "user":
-                chat_context += f"User: {content}\n"
-            elif role == "assistant":
-                chat_context += f"Assistant: {content}\n"
-    
-    final_prompt = f"""
-    You are a Funny Response Generator. Create a funny response to the user's question.
-    
-    User Question: "{q}"
-    {chat_context}
-    
-    Generate a funny response to the user's question.
-    """
-    final_answer = llm.invoke(final_prompt).content
-    logger.info(f"Generated funny response: {final_answer}")
-    
-    new_chat_history = chat_history + [
-        {"role": "user", "content": q},
-        {"role": "assistant", "content": final_answer}
-    ]
-    
-    return {
-        **state, 
-        "final_answer": final_answer,
-        "chat_history": new_chat_history
-    }
+async def researcher_router(state: MessagesState) -> str:
+    messages = state.get("messages", [])
+    if messages and hasattr(messages[-1], "tool_calls") and messages[-1].tool_calls:
+        return "tools"
+    return END
+
+# StateGraph definition moved to app.py
+
