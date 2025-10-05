@@ -8,7 +8,14 @@ logger = logging.getLogger(__name__)
 
 mcp = FastMCP("SQL Agent MCP Server")
 
-DB_URI = os.getenv("DB_URI")
+DB_USER = os.environ.get('MYSQL_USER')
+DB_PASSWORD = os.environ.get('MYSQL_PASSWORD')
+DB_HOST = os.environ.get('DB_HOST')
+DB_PORT = os.environ.get('DB_PORT')
+DB_NAME = os.environ.get('MYSQL_DATABASE')
+DB_DRIVER = os.environ.get('DB_DRIVER', 'pymysql')
+DB_URI = f"mysql+{DB_DRIVER}://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+
 if DB_URI and "mysql" in DB_URI.lower():
     if "?" not in DB_URI:
         DB_URI += "?charset=utf8mb4"
@@ -57,6 +64,3 @@ def query_sql(sql: str) -> str:
     
     return "\n\n".join(results)
 
-
-if __name__ == "__main__":
-    mcp.run(transport='http', host='0.0.0.0', port=8000)

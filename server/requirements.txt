@@ -1,10 +1,21 @@
-langchain>=0.3.21
-langchain-openai>=0.1.0
-langchain-community>=0.3.21
+# Core MCP and FastAPI dependencies
+fastmcp>=2.11.0
 pydantic>=2.11.1
 python-dotenv>=1.0.1
+
+# Database dependencies
 sqlalchemy>=2.0.30
 pymysql>=1.1.0
 cryptography>=3.4.8
+
+# LangChain dependencies
+langchain>=0.3.21
+langchain-openai>=0.1.0
+langchain-community>=0.3.21
+
+# HTTP and networking
 httpx>=0.25.0
-fastmcp>=2.11.0
+requests>=2.31.0
+
+# Search dependencies
+duckduckgo-search>=6.0.0

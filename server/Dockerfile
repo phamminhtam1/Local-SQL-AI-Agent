@@ -1,18 +1,16 @@
-# Use Python 3.12 slim image as base
-FROM python:3.12-slim
+# Use Python 3.11 slim image
+FROM python:3.11-slim
 
 # Set working directory
 WORKDIR /app
 
 # Set environment variables
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     gcc \
-    default-libmysqlclient-dev \
-    pkg-config \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
@@ -25,17 +23,18 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Create a non-root user for security
-RUN useradd --create-home --shell /bin/bash app && \
-    chown -R app:app /app
+# Create non-root user for security
+RUN useradd --create-home --shell /bin/bash app && chown -R app:app /app
 USER app
 
-# Expose the port the MCP server runs on
-EXPOSE 8000
+# Expose ports for both MCP servers
+EXPOSE 8001
+EXPOSE 8002
 
-# Health check for the MCP server
+# Health check
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD curl -f http://localhost:8001/health || exit 1 \
+    && curl -f http://localhost:8002/health || exit 1
 
 # Run the MCP server
-CMD ["python", "mcp_server.py"]
+CMD ["python", "run_mcp_server.py"]

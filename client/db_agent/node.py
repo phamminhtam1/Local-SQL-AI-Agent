@@ -2,8 +2,8 @@ import json
 import re
 import asyncio
 from langchain_openai import ChatOpenAI
-from agent.state import AgentState
-from mcp_client import MCPClient
+from db_agent.state import AgentState
+from .mcp_client import MCPClient
 import logging
 logger = logging.getLogger(__name__)
 
@@ -37,49 +37,10 @@ def clean_schema_text(raw_text: str) -> str:
         cleaned = text.strip()
     return cleaned
 
-# 1. Kiểm tra câu hỏi có liên quan DB không
-def check_relevancy(state: AgentState) -> AgentState:
-    q = state["question"]
-    chat_history = state.get("chat_history", [])
-    
-    chat_context = ""
-    if chat_history:
-        chat_context = "\nPrevious conversation:\n"
-        for msg in chat_history[-4:]:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            if role == "user":
-                chat_context += f"User: {content}\n"
-            elif role == "assistant":
-                chat_context += f"Assistant: {content}\n"
-    
-    prompt = f"""
-    You are a classifier. User question: "{q}"
-    Relevant conversation: {chat_context}
-    
-    Classify as 'relevant' if:
-    1. The question is about SQL/Database data, queries, tables, or schema
-    2. The question asks about available tools, tool descriptions, or system capabilities
-    3. The question asks "how many tools", "what tools", "list tools", or similar tool-related queries
-    4. The question is about database support, database tools, or system functionality
-    
-    Classify as 'not_relevant' if:
-    - The question is completely unrelated to databases or system tools
-    - The question is about general topics not related to the database system
-    
-    Respond with 'relevant' or 'not_relevant'.
-    """
-    resp = llm.invoke(prompt).content.strip().lower()
-    logger.info(f"Relevancy: {resp}")
-    
-    relevancy = "not_relevant" if "not_relevant" in resp else "relevant"    
-    return {**state, "relevancy": relevancy}
+# DB agent không cần check relevancy nữa vì orchestrator đã quyết định
 
-# 2. Planner LLM - Đánh giá câu hỏi và chọn tool
+# 1. Planner LLM - Đánh giá câu hỏi và chọn tool
 async def planner_llm(state: AgentState) -> AgentState:
-    relevancy = state.get("relevancy")
-    if relevancy != "relevant":
-        return state
     
     q = state["question"]
     iteration_count = state.get("iteration_count", 0)
@@ -217,12 +178,8 @@ async def planner_llm(state: AgentState) -> AgentState:
         "tool_metadata": enhanced_tool_metadata.get(selected_tool, {})
     }
 
-# 3. Executor - Thực thi tool được chọn
+# 2. Executor - Thực thi tool được chọn
 async def executor(state: AgentState) -> AgentState:
-    relevancy = state.get("relevancy")
-    if relevancy != "relevant":
-        logger.warning(f"Executor called with relevancy: {relevancy}, skipping...")
-        return state
     
     selected_tool = state["selected_tool"]
     question = state["question"]
@@ -380,12 +337,8 @@ async def executor(state: AgentState) -> AgentState:
             "execution_history": new_execution_history
         }
 
-# 4. Evaluator LLM - Đánh giá kết quả có đủ chưa
+# 3. Evaluator LLM - Đánh giá kết quả có đủ chưa
 def evaluator_llm(state: AgentState) -> AgentState:
-    relevancy = state.get("relevancy")
-    if relevancy != "relevant":
-        logger.warning(f"Evaluator LLM called with relevancy: {relevancy}, skipping...")
-        return state
     
     question = state["question"]
     tool_results = state.get("tool_results", [])
@@ -487,7 +440,7 @@ def evaluator_llm(state: AgentState) -> AgentState:
         "iteration_count": iteration_count + 1
     }
 
-# 5. Final Answer Generator - Kết hợp reasoning và kết quả cuối
+# 4. Final Answer Generator - Kết hợp reasoning và kết quả cuối
 def final_answer_generator(state: AgentState) -> AgentState:
     question = state["question"]
     tool_results = state.get("tool_results", [])
@@ -542,7 +495,7 @@ def final_answer_generator(state: AgentState) -> AgentState:
         "chat_history": new_chat_history
     }
 
-# 6. Funny response khi không liên quan DB
+# 5. Funny response (không cần thiết nữa vì orchestrator xử lý)
 def funny_response(state: AgentState) -> AgentState:
     q = state["question"]
     chat_history = state.get("chat_history", [])
