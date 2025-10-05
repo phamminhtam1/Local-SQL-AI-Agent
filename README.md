@@ -16,9 +16,10 @@ This project has been restructured to separate client and server components with
 │       ├── routers.py
 │       └── state.py
 ├── server/               # Server application (MCP Server)
-│   ├── Dockerfile        # Server Docker configuration
-│   ├── requirements.txt  # Server dependencies
-│   └── mcp_server.py    # MCP server
+│   └── sever_db/        # Database server components
+│       ├── Dockerfile   # Server Docker configuration
+│       ├── requirements.txt  # Server dependencies
+│       └── mcp_server.py    # MCP server
 ├── docker-compose.yml    # Multi-container orchestration
 ├── init.sql             # Database initialization
 └── env.example          # Environment variables template
