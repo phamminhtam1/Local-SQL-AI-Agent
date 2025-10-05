@@ -6,12 +6,12 @@ services:
     image: mysql:8.0
     container_name: mysql_db
     environment:
-      MYSQL_ROOT_PASSWORD: rootpassword
-      MYSQL_DATABASE: be_laravel
-      MYSQL_USER: app_user
-      MYSQL_PASSWORD: app_password
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
     ports:
-      - "3306:3306"
+      - "${DB_PORT}:3306"
     volumes:
       - mysql_data:/var/lib/mysql
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
@@ -27,13 +27,13 @@ services:
     build: ./client
     container_name: langgraph_client
     ports:
-      - "8501:8501"
+      - "${STREAMLIT_SERVER_PORT}:8501"
     environment:
-      - DB_URI=mysql+pymysql://app_user:app_password@mysql:3306/be_laravel
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - MCP_SERVER_URL=http://mcp_server:8000/mcp
-      - STREAMLIT_SERVER_PORT=8501
-      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
+      - MCP_DB_SERVER_URL=${MCP_DB_SERVER_URL}
+      - MCP_SEARCH_SERVER_URL=${MCP_SEARCH_SERVER_URL}
+      - STREAMLIT_SERVER_PORT=${STREAMLIT_SERVER_PORT}
+      - STREAMLIT_SERVER_ADDRESS=${STREAMLIT_SERVER_ADDRESS}
       - STREAMLIT_SERVER_HEADLESS=true
       - STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
     depends_on:
@@ -53,9 +53,16 @@ services:
     build: ./server
     container_name: mcp_server
     ports:
-      - "8000:8000"
+      - "${MCP_DB_SERVER_PORT}:8001"
+      - "${MCP_SEARCH_SERVER_PORT}:8002"
     environment:
-      - DB_URI=mysql+pymysql://app_user:app_password@mysql:3306/be_laravel
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - DB_HOST=${DB_HOST}
+      - DB_PORT=${DB_PORT}
+      - DB_DRIVER=${DB_DRIVER}
     depends_on:
       mysql:
         condition: service_healthy
