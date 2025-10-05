@@ -20,16 +20,6 @@ class ProxyRequest(BaseModel):
     arguments: Optional[Dict[str, Any]] = {}
     metadata: Optional[Dict[str, Any]] = {}
 
-class DatabaseConfig(BaseModel):
-    """Model cho database configuration"""
-    type: str
-    host: str
-    port: int
-    database: str
-    username: str
-    password: str
-    additional_params: Optional[Dict[str, Any]] = {}
-
 class ProxyResponse(BaseModel):
     """Model cho proxy response"""
     uuid: str

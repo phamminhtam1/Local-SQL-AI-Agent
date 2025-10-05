@@ -4,11 +4,11 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 import httpx, logging, json
 from datetime import datetime
 
-from proxy_service import UniversalProxyService
+from services import UniversalProxyService
 from models import DatabaseType, ProxyRequest
 from settings import PROXY_TARGETS
 
-# Cấu hình logging
+# config logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,7 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Middleware
+# middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -32,17 +32,20 @@ app.add_middleware(
     allowed_hosts=["*"]
 )
 
-# HTTP client với timeout và retry
+# HTTP client with timeout and retry
 async def get_http_client():
     return httpx.AsyncClient(
         timeout=httpx.Timeout(30.0),
         limits=httpx.Limits(max_keepalive_connections=20, max_connections=100)
     )
 
-# Dependency để lấy HTTP client
+# Dependency to get HTTP client
 async def get_client():
-    async with get_http_client() as client:
+    client = await get_http_client()
+    try:
         yield client
+    finally:
+        await client.aclose()
 
 proxy_service = UniversalProxyService()
 
@@ -57,34 +60,37 @@ async def health_check():
         "supported_arguments": ["uuid", "operation", "target", "path", "arguments", "metadata"]
     }
 
-# Universal Proxy Endpoint với Flexible Arguments
-@app.api_route("/proxy/{target}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"], include_in_schema=False)
+# Universal Proxy Endpoint with Flexible Arguments
+@app.api_route("/proxy/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"], include_in_schema=True)
 async def universal_proxy(
-    target: str,
-    path: str,
     request: Request,
     client: httpx.AsyncClient = Depends(get_client)
 ):
     """
-    Universal Proxy với Flexible Arguments:
-    1. Nhận UUID và các arguments khác từ client
-    2. Gọi Vault API để lấy DB config
-    3. Tạo connection string
-    4. Quyết định mode (self hoặc external)
-    5. Xử lý và trả về kết quả
+    Universal Proxy with Flexible Arguments:
+    1. Receive UUID and other arguments from client
+    2. Call Vault API to get DB config
+    3. Create connection string
+    4. Decide mode (self or external)
+    5. Process and return result
     """
     return await proxy_service.execute_universal_flow(request, client)
 
-# Endpoint để lấy danh sách targets
-@app.get("/targets")
-async def get_targets():
-    """Get available proxy targets"""
+# Endpoint to get list of targets
+@app.get("/health")
+async def health_check():
     return {
-        "targets": PROXY_TARGETS,
-        "count": len(PROXY_TARGETS)
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "targets": list(PROXY_TARGETS.keys()),
+        "supported_databases": [db.value for db in DatabaseType],
+        "logic_functions": [target for target in PROXY_TARGETS.keys() if target != "vault"],
+        "external_services": ["vault"],
+        "modes": ["self", "external"],
+        "supported_arguments": ["uuid", "operation", "target", "path", "arguments", "metadata"]
     }
 
-# Endpoint để lấy danh sách supported databases
+# Endpoint to get list of supported databases
 @app.get("/databases")
 async def get_supported_databases():
     """Get supported database types"""
@@ -93,18 +99,18 @@ async def get_supported_databases():
         "count": len(DatabaseType)
     }
 
-# Middleware để log requests
+# Middleware to log requests
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     start_time = datetime.now()
     
-    # Log request
+    # log request
     logger.info(f"Request: {request.method} {request.url}")
     
-    # Process request
+    # process request
     response = await call_next(request)
     
-    # Log response
+    # log response
     process_time = (datetime.now() - start_time).total_seconds()
     logger.info(f"Response: {response.status_code} - {process_time:.3f}s")
     
@@ -118,12 +124,12 @@ async def flexible_proxy(
 ):
     """
     Flexible Proxy Endpoint:
-    Nhận tất cả arguments trong request body
+    Receive all arguments in request body
     """    
-    # Tạo body từ request_data
+    # create body from request_data
     body = json.dumps(request_data.model_dump()).encode()
     
-    # Tạo mock request
+    # create mock request
     mock_request = Request({
         "type": "http", 
         "method": "POST", 
@@ -132,7 +138,7 @@ async def flexible_proxy(
         "query_string": b""
     })
     
-    # Set body cho request
+    # set body for request
     mock_request._body = body
     
     return await proxy_service.execute_universal_flow(mock_request, client)
