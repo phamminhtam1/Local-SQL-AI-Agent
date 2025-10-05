@@ -1,17 +1,8 @@
-from agent.state import AgentState
+from db_agent.state import AgentState
 from langgraph.graph import END
 import logging
 
 logger = logging.getLogger(__name__)
-
-def relevance_router(state: AgentState):
-    relevancy = state.get("relevancy")    
-    if relevancy == "relevant":
-        print("Routing to planner_llm")
-        return "planner_llm"
-    else:
-        print(" Routing to funny_response")
-        return "funny_response"
 
 def evaluator_router(state: AgentState):
     is_complete = state.get("is_complete")

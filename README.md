@@ -5,10 +5,28 @@ A multi-agent AI system with Orchestrator architecture, supporting intelligent S
 ## 🏗️ System Architecture
 
 ### Orchestrator Pattern
+
 The system uses an Orchestrator pattern to coordinate specialized agents:
 
 ```
-Query → Intent Classification → Orchestrator → Specialized Agents → Aggregation → Verification → Response
+├── client/                 # Client application (Streamlit UI + LangGraph)
+│   ├── Dockerfile         # Client Docker configuration
+│   ├── requirements.txt   # Client dependencies
+│   ├── ui.py             # Streamlit UI
+│   ├── app.py            # LangGraph application
+│   ├── mcp_client.py     # MCP client
+│   └── agent/            # Agent logic
+│       ├── node.py
+│       ├── routers.py
+│       └── state.py
+├── server/               # Server application (MCP Server)
+│   └── sever_db/        # Database server components
+│       ├── Dockerfile   # Server Docker configuration
+│       ├── requirements.txt  # Server dependencies
+│       └── mcp_server.py    # MCP server
+├── docker-compose.yml    # Multi-container orchestration
+├── init.sql             # Database initialization
+└── env.example          # Environment variables template
 ```
 
 ### Key Components:
@@ -109,21 +127,25 @@ docker-compose down
 ### Agent Structure
 
 #### 1. Orchestrator (`client/orchestrator.py`)
+
 - Coordinates processing flow
 - Manages state between agents
 - Handles async/await operations
 
 #### 2. DB Agent
+
 - Connects to MCP DB Server
 - Executes SQL queries
 - Checks database health
 
-#### 3. Search Agent  
+#### 3. Search Agent
+
 - Connects to MCP Search Server
 - Searches and analyzes information
 - Handles complex queries
 
 #### 4. Verification Engine
+
 - Verifies result accuracy
 - Evaluates response quality
 - Suggests improvements
@@ -138,15 +160,15 @@ intent = classify_intent(user_query)
 if intent == "DB":
     # Route to DB Agent
     db_result = await db_agent.process(query)
-    # Route to Search Agent  
+    # Route to Search Agent
     search_result = await search_agent.process(query)
-    
+
     # 3. Aggregate Results
     aggregated = aggregate_results(db_result, search_result)
-    
+
     # 4. Verify Answer
     verified = verify_answer(aggregated)
-    
+
     # 5. Generate Final Response
     response = llm_tools.generate_answer(verified)
 ```
@@ -163,10 +185,10 @@ error = detect_error(user_report)
 if error.type == "DB_BLOCK":
     # DB Agent: Check table health
     db_diagnosis = await db_agent.diagnose_table(error.table)
-    
+
     # Search Agent: Find similar issues
     search_solution = await search_agent.find_solution(error.table)
-    
+
     # Generate Solution
     solution = generate_solution(db_diagnosis, search_solution)
 ```
@@ -179,7 +201,7 @@ if error.type == "DB_BLOCK":
 # Build client
 docker build -t langgraph-client ./client
 
-# Build server  
+# Build server
 docker build -t mcp-server ./server
 ```
 

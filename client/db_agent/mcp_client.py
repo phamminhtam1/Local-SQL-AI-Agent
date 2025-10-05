@@ -8,7 +8,8 @@ logging.basicConfig(level=logging.INFO)
 
 class MCPClient:
     def __init__(self, url: str = None):
-        self.url = url or os.getenv("MCP_DB_SERVER_URL", "http://mcp_server:8001/mcp")
+        self.url = url or os.getenv("MCP_DB_SERVER_URL")
+
         self.client = None
         self.connected = False
 

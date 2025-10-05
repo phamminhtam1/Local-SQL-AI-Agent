@@ -1,6 +1,13 @@
+# Core MCP and FastAPI dependencies
+fastmcp>=2.11.0
+
 langchain-community>=0.3.21
 pydantic>=2.11.1
 python-dotenv>=1.0.1
+
+# Database dependencies
 sqlalchemy>=2.0.30
 pymysql>=1.1.0
-fastmcp>=2.11.0
+
+# Search dependencies
+duckduckgo-search>=6.0.0

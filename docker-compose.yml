@@ -5,6 +5,8 @@ services:
   mysql:
     image: mysql:8.0
     container_name: mysql_db
+    env_file:
+      - ./.env
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: ${MYSQL_DATABASE}
@@ -26,8 +28,8 @@ services:
   client:
     build: ./client
     container_name: langgraph_client
-    ports:
-      - "${STREAMLIT_SERVER_PORT}:8501"
+    env_file:
+      - ./.env
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - MCP_DB_SERVER_URL=${MCP_DB_SERVER_URL}
@@ -36,6 +38,8 @@ services:
       - STREAMLIT_SERVER_ADDRESS=${STREAMLIT_SERVER_ADDRESS}
       - STREAMLIT_SERVER_HEADLESS=true
       - STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+    ports:
+      - "${STREAMLIT_SERVER_PORT}:8501"
     depends_on:
       mysql:
         condition: service_healthy
@@ -48,14 +52,14 @@ services:
       - ./client:/app
     restart: unless-stopped
 
-  # MCP Server
+  # MCP Server (chạy cả DB và Search server)
   mcp_server:
     build: ./server
     container_name: mcp_server
-    ports:
-      - "${MCP_DB_SERVER_PORT}:8001"
-      - "${MCP_SEARCH_SERVER_PORT}:8002"
+    env_file:
+      - ./.env
     environment:
+      - NEWS_API_KEY=${NEWS_API_KEY}
       - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
       - MYSQL_DATABASE=${MYSQL_DATABASE}
       - MYSQL_USER=${MYSQL_USER}
@@ -63,6 +67,9 @@ services:
       - DB_HOST=${DB_HOST}
       - DB_PORT=${DB_PORT}
       - DB_DRIVER=${DB_DRIVER}
+    ports:
+      - "${MCP_DB_SERVER_PORT}:8001" # Database server
+      - "${MCP_SEARCH_SERVER_PORT}:8002" # Search server
     depends_on:
       mysql:
         condition: service_healthy
@@ -71,6 +78,27 @@ services:
     volumes:
       - ./.env:/app/.env:ro
       - ./server:/app
+    restart: unless-stopped
+    command: ["python", "run_mcp_server.py"]
+
+  api:
+    build: ./api
+    container_name: api_proxy
+    env_file:
+      - ./.env
+    environment:
+      - VAULT_SERVICE_URL=${VAULT_SERVICE_URL}
+      - SELF_API_URL=${SELF_API_URL}
+    ports:
+      - "${API_PORT}:8888"  
+    depends_on:
+      - mcp_server
+      - client
+    networks:
+      - app_network
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./api:/app
     restart: unless-stopped
 
 volumes:
