@@ -166,5 +166,40 @@ def change_password(uuid:str, login_name: str, new_password: str):
     except Exception as e:
         logger.error(f"Error changing password: {e}")
 
+@db_mcp.tool()
+def list_tables(uuid:str):
+    """name:List all tables in the database with schema
+       description:List all tables in the database with schema
+    """
+    try:
+        payload = {
+            "uuid": uuid,
+        }
+        resp = requests.post(f"{API_BASE}/list_tables",payload = payload)
+        logger.info("List tables query executed successfully")
+
+        return resp
+    except Exception as e:
+        logger.error(f"Error listing table: {e}")
+
+
+@db_mcp.tool()
+def query_sql(uuid:str, sql: str):
+    """name:Execute SQL SELECT queries to get specific data
+       description:Execute SQL SELECT queries to get specific data
+    """
+    try:
+        payload = {
+            "uuid": uuid,
+            "sql":sql,
+        }
+        resp = requests.post(f"{API_BASE}/query_sql",payload = payload)
+        logger.info("Generate sql query tool executed successfully")
+
+        return resp
+    except Exception as e:
+        logger.error(f"Error calling sql query tool: {e}")
+
+
 if __name__ == "__main__":
     db_mcp.run(transport='http', host='0.0.0.0', port=8002)
