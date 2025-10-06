@@ -3,7 +3,7 @@ from fastmcp import FastMCP
 import requests
 
 db_mcp = FastMCP("My DB MCP Server")
-API_BASE = "http:/localhost:8000" 
+API_BASE = "http://localhost:8888/proxy/" 
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)

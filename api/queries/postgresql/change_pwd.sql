@@ -1,0 +1,1 @@
+ALTER ROLE :login_name WITH PASSWORD :password;

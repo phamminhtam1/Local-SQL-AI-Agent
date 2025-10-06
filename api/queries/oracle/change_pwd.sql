@@ -1,0 +1,1 @@
+ALTER USER :login_name IDENTIFIED BY :password;
