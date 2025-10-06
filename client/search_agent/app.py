@@ -1,38 +1,44 @@
 import asyncio
-from langgraph.graph import END, MessagesState, StateGraph
-from langgraph.prebuilt import ToolNode
-from search_agent.node import researcher, researcher_router, tools
+from langgraph.graph import END, StateGraph
+from search_agent.state import SearchAgentState
+from search_agent.node import planner_llm, executor, evaluator_llm, final_answer_generator
 
-async def final_answer_generator(state: MessagesState):
-    """Convert search agent result to orchestrator format"""
-    messages = state.get("messages", [])
-    if messages:
-        last_message = messages[-1]
-        if hasattr(last_message, 'content'):
-            final_answer = last_message.content
-        else:
-            final_answer = str(last_message)
+def should_continue(state: SearchAgentState) -> str:
+    """Determine if we should continue the loop or finish"""
+    is_complete = state.get("is_complete", False)
+    iteration_count = state.get("iteration_count", 0)
+    max_iterations = state.get("max_iterations", 3)
+    
+    if is_complete or iteration_count >= max_iterations:
+        return "final_answer_generator"
     else:
-        final_answer = "No answer generated"
-    return {
-        "final_answer": final_answer,
-        "messages": messages
-    }
+        return "planner_llm"
 
 def build_app():
-    # Create the StateGraph for the research agent
-    builder = StateGraph(MessagesState)
-    builder.add_node("researcher", researcher)
-    builder.add_node("tools", ToolNode(tools))
+    # Create the StateGraph for the search agent using React pattern
+    builder = StateGraph(SearchAgentState)
+    
+    # Add nodes
+    builder.add_node("planner_llm", planner_llm)
+    builder.add_node("executor", executor)
+    builder.add_node("evaluator_llm", evaluator_llm)
     builder.add_node("final_answer_generator", final_answer_generator)
-    builder.set_entry_point("researcher")
-    builder.add_edge("tools", "researcher")
+    
+    # Set entry point
+    builder.set_entry_point("planner_llm")
+    
+    # Add edges
+    builder.add_edge("planner_llm", "executor")
+    builder.add_edge("executor", "evaluator_llm")
     builder.add_conditional_edges(
-        "researcher",
-        researcher_router,
-        {"tools": "tools", END: "final_answer_generator"},
+        "evaluator_llm",
+        should_continue,
+        {
+            "planner_llm": "planner_llm",
+            "final_answer_generator": "final_answer_generator"
+        }
     )
     builder.add_edge("final_answer_generator", END)
-    graph = builder.compile()
     
+    graph = builder.compile()
     return graph

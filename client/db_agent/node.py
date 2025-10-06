@@ -45,15 +45,12 @@ def clean_schema_text(raw_text: str) -> str:
         cleaned = text.strip()
     return cleaned
 
-# DB agent không cần check relevancy nữa vì orchestrator đã quyết định
-
 # 1. Planner LLM - Đánh giá câu hỏi và chọn tool
 async def planner_llm(state: AgentState) -> AgentState:
     
-    q = state["question"]
+    q = state["question"] 
     iteration_count = state.get("iteration_count", 0)
     execution_history = state.get("execution_history", [])
-    chat_history = state.get("chat_history", [])
     
     # Get available tools from MCP server
     if not mcp_client.connected:
@@ -85,17 +82,6 @@ async def planner_llm(state: AgentState) -> AgentState:
             has_schema = True
             break
     
-    chat_context = ""
-    if chat_history:
-        chat_context = "\nPrevious conversation:\n"
-        for msg in chat_history[-6:]:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            if role == "user":
-                chat_context += f"User: {content}\n"
-            elif role == "assistant":
-                chat_context += f"Assistant: {content}\n"
-    
     history_context = ""
     if execution_history:
         history_context = "\nPrevious tool executions:\n"
@@ -104,48 +90,16 @@ async def planner_llm(state: AgentState) -> AgentState:
             result_obj = exec_info.get("result", "")
             result_text = extract_text_from_result(result_obj)
             history_context += f"Step {i}: {tool_name}\n{result_text}\n\n"
-
-    
-    # Kiểm tra xem có phải câu hỏi follow-up không
-    is_follow_up = False
-    follow_up_context = ""
-    if chat_history:
-        follow_up_keywords = [
-            "those", "these", "them", "they", "it", "this", "that", "which", "what",
-            "previous", "recent", "last", "before", "earlier", "mentioned", "above", "listed",
-            "shown", "displayed", "returned", "found", "identified", "discovered",
-            "sample", "examples", "instances", "records", "rows", "data", "content",
-            "show", "display", "get", "fetch", "retrieve", "extract", "pull",
-            "some", "few", "several", "all", "each", "every", "any", "first", "last",
-            "top", "bottom", "most", "least", "highest", "lowest",
-            "now", "next", "then", "also", "additionally", "furthermore", "moreover",
-            "analyze", "examine", "investigate", "explore", "check", "verify", "confirm",
-            "compare", "contrast", "relate", "connect", "link", "associate"
-        ]
-        q_lower = q.lower()
-        for keyword in follow_up_keywords:
-            if keyword in q_lower:
-                is_follow_up = True
-                break
-        
-        if len(q.split()) <= 5 and chat_history:
-            is_follow_up = True
-        
-        if is_follow_up:
-            follow_up_context = "\nFOLLOW-UP QUESTION DETECTED: This appears to be a follow-up question. Use previous conversation context to understand what the user is referring to."
     
     planner_prompt = f"""
-    You are a Planner LLM. Based on the user's question, conversation history, and execution history, choose the most appropriate tool.
+    You are a Planner LLM. Based on the database-specific question assigned to you and execution history, choose the most appropriate tool.
     
     Available tools:
     {json.dumps(enhanced_tool_metadata, indent=2, ensure_ascii=False)}
     
-    Current user question: "{q}"
+    Database task assigned: "{q}"
     Current iteration: {iteration_count + 1}
     Schema already available: {has_schema}
-    Is follow-up question: {is_follow_up}
-    {follow_up_context}
-    {chat_context}
     {history_context}
     
     IMPORTANT RULES:
@@ -154,15 +108,11 @@ async def planner_llm(state: AgentState) -> AgentState:
     3. Only choose list_tables if no schema information is available yet
     4. Use query_sql for database overview questions and statistics
     5. Use query_sql for relationship analysis and complex queries
-    6. Consider the Previous conversation - if user refers to previous results, use that information
-    7. For follow-up questions, use query_sql to get data from previously mentioned tables
     
     Consider:
     1. What information is needed to answer the user's question?
     2. What tools have been executed before and what did they return?
     3. Is additional information needed from the database?
-    4. Does the user's question reference previous results or context?
-    5. If this is a follow-up question, what tables were mentioned in previous conversation?
     
     Respond with ONLY the tool name from the available tools above.
     """
@@ -192,9 +142,7 @@ async def executor(state: AgentState) -> AgentState:
     selected_tool = state["selected_tool"]
     question = state["question"]
     execution_history = state.get("execution_history", [])
-    tool_results = state.get("tool_results", [])
-    chat_history = state.get("chat_history", [])
-    
+    tool_results = state.get("tool_results", [])    
     logger.info(f"Executing tool: {selected_tool}")
     
     try:
@@ -217,53 +165,7 @@ async def executor(state: AgentState) -> AgentState:
                     schema_info = f"Could not retrieve schema: {str(e)}"
 
             schema_info = clean_schema_text(schema_info)
-            
-            chat_context_for_sql = ""
-            if chat_history:
-                recent_msgs = chat_history[-6:]
-                formatted_pairs = []
-                pair_index = 1
-                current_pair = {}
-
-                for msg in recent_msgs:
-                    role = msg.get("role", "")
-                    content = msg.get("content", "")
-                    if role == "user":
-                        current_pair = {"index": pair_index, "user": content}
-                    elif role == "assistant" and current_pair:
-                        current_pair["assistant"] = content
-                        formatted_pairs.append(current_pair)
-                        pair_index += 1
-                        current_pair = {}
-
-                chat_context_for_sql = (
-                    "\nPrevious conversation context:\n"
-                    + json.dumps(formatted_pairs, indent=2, ensure_ascii=False)
-                )
-            else:
-                chat_context_for_sql = ""
-
-            # Kiểm tra xem có phải follow-up question không
-            is_follow_up_sql = False
-            if chat_history:
-                follow_up_keywords = [
-                    "those", "these", "them", "they", "it", "this", "that", "which", "what",
-                    "previous", "recent", "last", "before", "earlier", "mentioned", "above", "listed",
-                    "shown", "displayed", "returned", "found", "identified", "discovered",
-                    "sample", "examples", "instances", "records", "rows", "data", "content",
-                    "show", "display", "get", "fetch", "retrieve", "extract", "pull",
-                    "some", "few", "several", "all", "each", "every", "any", "first", "last",
-                    "top", "bottom", "most", "least", "highest", "lowest",
-                    "now", "next", "then", "also", "additionally", "furthermore", "moreover",
-                    "analyze", "examine", "investigate", "explore", "check", "verify", "confirm",
-                    "compare", "contrast", "relate", "connect", "link", "associate"
-                ]
-                q_lower = question.lower()
-                for keyword in follow_up_keywords:
-                    if keyword in q_lower:
-                        is_follow_up_sql = True
-                        break
-            
+    
             sql_prompt = f"""
             You are a SQL generator. Convert the user question to a valid SQL SELECT query.
             
@@ -279,25 +181,7 @@ async def executor(state: AgentState) -> AgentState:
             - Each SQL statement will be executed separately.
             - Do not include explanations or markdown formatting — return only raw SQL.
 
-            Context handling:
-            - If the user’s question refers to previous results (e.g., “those”, “these”, “mentioned before”, “the above”, “the previous ones”):
-            → Reuse relevant context from earlier queries or conversation to identify what “those” refers to.
-            → This may include table names, IDs, or data subsets mentioned earlier.
-            → Only do this if it is clearly implied from context.
-
-            - If the user asks to sort, filter, or analyze something that was previously listed:
-            → Apply ORDER BY, WHERE, or aggregation clauses using the same tables/columns previously used.
-
-            - When the reference is ambiguous, infer the most likely table or data scope from the recent conversation and previous SQL results.
-
-            - Do not assume specific ID values or row data unless clearly provided in the context.
-
-            
-
-            Previous conversation:
-            {chat_context_for_sql}
-            Current user question: "{question}"
-            Is follow-up question: {is_follow_up_sql}
+            User Question: "{question}"
             
             Return ONLY the SQL query without explanations or markdown formatting.
             """
@@ -307,7 +191,6 @@ async def executor(state: AgentState) -> AgentState:
                 sql = sql.replace("```sql", "").replace("```", "").strip()
             elif sql.startswith("```"):
                 sql = sql.replace("```", "").strip()
-            # logger.info(f"Prompt Node Executor: {sql_prompt}")
             logger.info(f"Generated SQL: {sql}")
             result = await mcp_client.call_tool("query_sql", {"sql": sql})
         else:
@@ -352,9 +235,7 @@ def evaluator_llm(state: AgentState) -> AgentState:
     tool_results = state.get("tool_results", [])
     execution_history = state.get("execution_history", [])
     iteration_count = state.get("iteration_count", 0)
-    max_iterations = state.get("max_iterations", 5)
-    chat_history = state.get("chat_history", [])
-    
+    max_iterations = state.get("max_iterations", 5)    
     all_results = "\n".join([str(result) for result in tool_results])
     
     has_schema = False
@@ -377,25 +258,13 @@ def evaluator_llm(state: AgentState) -> AgentState:
                 recent_queries.append(result[:100])
     
     has_repetitive_queries = len(set(recent_queries)) < len(recent_queries) if recent_queries else False
-    
-    chat_context = ""
-    if chat_history:
-        chat_context = "\nPrevious conversation:\n"
-        for msg in chat_history[-4:]:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            if role == "user":
-                chat_context += f"User: {content}\n"
-            elif role == "assistant":
-                chat_context += f"Assistant: {content}\n"
-    
+        
     evaluator_prompt = f"""
         You are an Evaluator LLM. Assess whether the current results adequately answer the user's question.
 
         User Question: "{question}"
         Current Results: {all_results}
         Iteration: {iteration_count + 1}/{max_iterations}
-        {chat_context}
         
         IMPORTANT: Analysis
         - Has list_tables been executed: {has_schema}
@@ -452,28 +321,13 @@ def evaluator_llm(state: AgentState) -> AgentState:
 def final_answer_generator(state: AgentState) -> AgentState:
     question = state["question"]
     tool_results = state.get("tool_results", [])
-    execution_history = state.get("execution_history", [])
-    chat_history = state.get("chat_history", [])
-    
+    execution_history = state.get("execution_history", [])    
     all_results = "\n".join([str(result) for result in tool_results])
-    
-    chat_context = ""
-    if chat_history:
-        chat_context = "\nPrevious conversation:\n"
-        for msg in chat_history[-4:]:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            if role == "user":
-                chat_context += f"User: {content}\n"
-            elif role == "assistant":
-                chat_context += f"Assistant: {content}\n"
-    
     final_prompt = f"""
     You are a Final Answer Generator. Create a comprehensive, natural language answer.
     
     Current User Question: "{question}"
     Database Results: {all_results}
-    {chat_context}
     
     Execution History:
     {json.dumps(execution_history, indent=2)}
@@ -492,51 +346,8 @@ def final_answer_generator(state: AgentState) -> AgentState:
     final_answer = llm.invoke(final_prompt).content
     logger.info(f"Generated final answer: {final_answer}")
     
-    new_chat_history = chat_history + [
-        {"role": "user", "content": question},
-        {"role": "assistant", "content": final_answer}
-    ]
-    
     return {
         **state,
-        "final_answer": final_answer,
-        "chat_history": new_chat_history
+        "final_answer": final_answer
     }
 
-# 5. Funny response (không cần thiết nữa vì orchestrator xử lý)
-def funny_response(state: AgentState) -> AgentState:
-    q = state["question"]
-    chat_history = state.get("chat_history", [])
-    
-    chat_context = ""
-    if chat_history:
-        chat_context = "\nPrevious conversation:\n"
-        for msg in chat_history[-4:]:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            if role == "user":
-                chat_context += f"User: {content}\n"
-            elif role == "assistant":
-                chat_context += f"Assistant: {content}\n"
-    
-    final_prompt = f"""
-    You are a Funny Response Generator. Create a funny response to the user's question.
-    
-    User Question: "{q}"
-    {chat_context}
-    
-    Generate a funny response to the user's question.
-    """
-    final_answer = llm.invoke(final_prompt).content
-    logger.info(f"Generated funny response: {final_answer}")
-    
-    new_chat_history = chat_history + [
-        {"role": "user", "content": q},
-        {"role": "assistant", "content": final_answer}
-    ]
-    
-    return {
-        **state, 
-        "final_answer": final_answer,
-        "chat_history": new_chat_history
-    }

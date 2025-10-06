@@ -2,10 +2,6 @@ from typing import TypedDict, Optional, Any, List, Dict
 
 class AgentState(TypedDict):
     question: str
-    
-    # Chat History
-    chat_history: Optional[List[Dict]]  # Lịch sử trò chuyện: [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
-    
     # Planner LLM
     selected_tool: Optional[str]  # Tool được chọn bởi Planner
     tool_metadata: Optional[Dict]  # Metadata của tool được chọn
