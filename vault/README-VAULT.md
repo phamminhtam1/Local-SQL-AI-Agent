@@ -110,18 +110,19 @@ X-Vault-Token: your-vault-token
 
 ### 3. Lưu trữ Database Config
 ```bash
-POST /v1/secret/data/{uuid}/db-config
+POST /secrets
 ```
 
 **Headers:**
 ```
-X-Vault-Token: your-vault-token
 Content-Type: application/json
 ```
 
 **Request Body:**
 ```json
 {
+  "user_id": "user-123",
+  "name": "string",
   "data": {
     "type": "mysql",
     "host": "mysql_db",
@@ -141,30 +142,39 @@ Content-Type: application/json
 **Response:**
 ```json
 {
+  "id": "secret-123",
+  "user_id": "user-123",
+  "name": "string",
   "data": {
-    "created_time": "2024-01-01T00:00:00Z",
-    "custom_metadata": null,
-    "deletion_time": "",
-    "destroyed": false,
-    "version": 1
-  }
+    "type": "mysql",
+    "host": "mysql_db",
+    "port": 3306,
+    "database": "user_db",
+    "username": "user",
+    "password": "password"
+  },
+  "created_at": "2024-01-01T00:00:00Z",
+  "updated_at": "2024-01-01T00:00:00Z"
 }
 ```
 
 ### 4. Lấy Database Config
 ```bash
-GET /v1/secret/data/{uuid}/db-config
+GET /secrets?user_id={uuid}&include_values=true&name={username}
 ```
 
 **Headers:**
 ```
-X-Vault-Token: your-vault-token
+Content-Type: application/json
 ```
 
 **Response:**
 ```json
-{
-  "data": {
+[
+  {
+    "id": "secret-123",
+    "user_id": "user-123",
+    "name": "string",
     "data": {
       "type": "mysql",
       "host": "mysql_db",
@@ -178,57 +188,57 @@ X-Vault-Token: your-vault-token
         "timeout": 30
       }
     },
-    "metadata": {
-      "created_time": "2024-01-01T00:00:00Z",
-      "custom_metadata": null,
-      "deletion_time": "",
-      "destroyed": false,
-      "version": 1
-    }
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:00Z"
   }
-}
+]
 ```
 
 ### 5. List Secrets
 ```bash
-LIST /v1/secret/data/{uuid}
+GET /secrets?user_id={uuid}
 ```
 
 **Headers:**
 ```
-X-Vault-Token: your-vault-token
+Content-Type: application/json
 ```
 
 **Response:**
 ```json
-{
-  "data": {
-    "keys": [
-      "db-config",
-      "api-keys",
-      "certificates"
-    ]
+[
+  {
+    "id": "secret-123",
+    "user_id": "user-123",
+    "name": "string",
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:00Z"
+  },
+  {
+    "id": "secret-456",
+    "user_id": "user-123",
+    "name": "api-keys",
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:00Z"
   }
-}
+]
 ```
 
 ### 6. Delete Secret
 ```bash
-DELETE /v1/secret/data/{uuid}/db-config
+DELETE /secrets/{secret_id}
 ```
 
 **Headers:**
 ```
-X-Vault-Token: your-vault-token
+Content-Type: application/json
 ```
 
 **Response:**
 ```json
 {
-  "data": {
-    "deletion_time": "2024-01-01T00:00:00Z",
-    "destroyed": true
-  }
+  "message": "Secret deleted successfully",
+  "deleted_at": "2024-01-01T00:00:00Z"
 }
 ```
 
@@ -251,10 +261,11 @@ export VAULT_TOKEN="your-vault-token"
 ### 2. Lưu trữ Database Config cho User
 ```bash
 # Lưu config cho user-123
-curl -X POST http://localhost:8200/v1/secret/data/user-123/db-config \
-  -H "X-Vault-Token: your-vault-token" \
+curl -X POST http://localhost:8000/secrets \
   -H "Content-Type: application/json" \
   -d '{
+    "user_id": "user-123",
+    "name": "string",
     "data": {
       "type": "mysql",
       "host": "mysql_db",
@@ -269,29 +280,29 @@ curl -X POST http://localhost:8200/v1/secret/data/user-123/db-config \
 ### 3. Lấy Database Config
 ```bash
 # Lấy config cho user-123
-curl -X GET http://localhost:8200/v1/secret/data/user-123/db-config \
-  -H "X-Vault-Token: your-vault-token"
+curl -X GET "http://localhost:8000/secrets?user_id=user-123&include_values=true&name=string" \
+  -H "Content-Type: application/json"
 ```
 
 ### 4. List Secrets
 ```bash
-# Liệt kê tất cả secrets trong path
-curl -X LIST http://localhost:8200/v1/secret/data/user-123 \
-  -H "X-Vault-Token: your-vault-token"
+# Liệt kê tất cả secrets cho user
+curl -X GET "http://localhost:8000/secrets?user_id=user-123" \
+  -H "Content-Type: application/json"
 ```
 
 ### 5. Delete Secret
 ```bash
 # Xóa secret
-curl -X DELETE http://localhost:8200/v1/secret/data/user-123/db-config \
-  -H "X-Vault-Token: your-vault-token"
+curl -X DELETE http://localhost:8000/secrets/secret-123 \
+  -H "Content-Type: application/json"
 ```
 
 ## 🔗 Phần 2: Kết hợp Vault với API Proxy
 
 ### 1. Kiến trúc tích hợp
 ```
-Client → API Proxy → Vault API → DB Config → Connection String → Database Operations
+Client → API Proxy → Vault API → DB Config → Connection String → Forward to API → Response
 ```
 
 ### 2. Setup tích hợp
@@ -309,10 +320,11 @@ curl http://localhost:8888/health
 ### 3. Lưu DB Config vào Vault (cho API Proxy sử dụng)
 ```bash
 # Lưu config cho user-123 (API Proxy sẽ tự động lấy)
-curl -X POST http://localhost:8200/v1/secret/data/user-123/db-config \
-  -H "X-Vault-Token: your-vault-token" \
+curl -X POST http://localhost:8000/secrets \
   -H "Content-Type: application/json" \
   -d '{
+    "user_id": "user-123",
+    "name": "string",
     "data": {
       "type": "mysql",
       "host": "mysql_db",
@@ -327,17 +339,12 @@ curl -X POST http://localhost:8200/v1/secret/data/user-123/db-config \
 ### 4. Sử dụng API Proxy với Vault integration
 ```bash
 # API Proxy tự động gọi Vault để lấy DB config
-curl -X POST http://localhost:8888/proxy/flexible \
+curl -X POST http://localhost:8888/database/query \
   -H "Content-Type: application/json" \
+  -H "X-User-UUID: user-123" \
   -d '{
-    "uuid": "user-123",
-    "operation": "db",
-    "target": "self",
-    "path": "query",
-    "arguments": {
-      "sql": "SELECT * FROM users WHERE id = ?",
-      "params": [123]
-    }
+    "sql": "SELECT * FROM users WHERE id = ?",
+    "params": [123]
   }'
 ```
 
@@ -346,8 +353,8 @@ curl -X POST http://localhost:8888/proxy/flexible \
 2. **API Proxy gọi Vault** để lấy DB config cho UUID
 3. **Vault trả về config** (host, port, database, credentials)
 4. **API Proxy tạo connection string** từ config
-5. **API Proxy thực hiện database operations** với connection string
-6. **API Proxy trả về kết quả** cho client
+5. **API Proxy forward request** tới API endpoint với connection string
+6. **API Proxy trả về response** từ API cho client
 
 ### 6. API Proxy Endpoints với Vault integration
 
@@ -358,38 +365,27 @@ GET http://localhost:8888/health
 
 #### Database Query
 ```bash
-POST http://localhost:8888/proxy/flexible
+POST http://localhost:8888/database/query
 ```
 
 **Request:**
 ```json
 {
-  "uuid": "user-123",
-  "operation": "db",
-  "target": "self",
-  "path": "query",
-  "arguments": {
-    "sql": "SELECT * FROM users WHERE status = ?",
-    "params": ["active"]
-  }
+  "sql": "SELECT * FROM users WHERE status = ?",
+  "params": ["active"]
 }
+```
+
+**Headers:**
+```
+X-User-UUID: user-123
+Content-Type: application/json
 ```
 
 **Response:**
 ```json
 {
   "uuid": "user-123",
-  "target": "self",
-  "path": "query",
-  "mode": "self",
-  "db_config": {
-    "type": "mysql",
-    "host": "mysql_db",
-    "port": 3306,
-    "database": "user_123_db",
-    "username": "user_123",
-    "password": "secure_password_123"
-  },
   "connection_string": "mysql+pymysql://user_123:secure_password_123@mysql_db:3306/user_123_db",
   "result": {
     "sql": "SELECT * FROM users WHERE status = ?",
@@ -405,36 +401,22 @@ POST http://localhost:8888/proxy/flexible
 
 #### Database Health Check
 ```bash
-POST http://localhost:8888/proxy/flexible
+GET http://localhost:8888/database/health
 ```
 
-**Request:**
-```json
-{
-  "uuid": "user-123",
-  "operation": "db",
-  "target": "self",
-  "path": "health",
-  "arguments": {
-    "check_connection": true
-  }
-}
+**Headers:**
+```
+X-User-UUID: user-123
 ```
 
 #### Get Database Tables
 ```bash
-POST http://localhost:8888/proxy/flexible
+GET http://localhost:8888/database/tables
 ```
 
-**Request:**
-```json
-{
-  "uuid": "user-123",
-  "operation": "db",
-  "target": "self",
-  "path": "tables",
-  "arguments": {}
-}
+**Headers:**
+```
+X-User-UUID: user-123
 ```
 
 ### 7. Lợi ích của tích hợp
@@ -482,7 +464,7 @@ VAULT_PORT=8200
 VAULT_API_PORT=8000
 
 # Vault Service URLs
-VAULT_SERVICE_URL=http://vault:8200
+VAULT_SERVICE_URL=http://host.docker.internal:8000
 ```
 
 ### Docker Compose
@@ -553,14 +535,24 @@ curl -H "X-Vault-Token: your-token" http://localhost:8200/v1/auth/token/lookup-s
 ### 3. Test Secret Operations
 ```bash
 # Test lưu secret
-curl -X POST http://localhost:8200/v1/secret/data/test/db-config \
-  -H "X-Vault-Token: your-token" \
+curl -X POST http://localhost:8000/secrets \
   -H "Content-Type: application/json" \
-  -d '{"data": {"type": "mysql", "host": "localhost", "port": 3306, "database": "test", "username": "test", "password": "test"}}'
+  -d '{
+    "user_id": "test",
+    "name": "string",
+    "data": {
+      "type": "mysql",
+      "host": "localhost",
+      "port": 3306,
+      "database": "test",
+      "username": "test",
+      "password": "test"
+    }
+  }'
 
 # Test lấy secret
-curl -X GET http://localhost:8200/v1/secret/data/test/db-config \
-  -H "X-Vault-Token: your-token"
+curl -X GET "http://localhost:8000/secrets?user_id=test&include_values=true&name=string" \
+  -H "Content-Type: application/json"
 ```
 
 ## 📝 Examples
@@ -571,11 +563,12 @@ curl -X GET http://localhost:8200/v1/secret/data/test/db-config \
 
 # User UUID
 USER_UUID="user-12345"
-VAULT_TOKEN="your-vault-token"
-VAULT_URL="http://localhost:8200"
+VAULT_URL="http://localhost:8000"
 
 # Database config
 DB_CONFIG='{
+  "user_id": "user-12345",
+  "name": "string",
   "data": {
     "type": "mysql",
     "host": "mysql_db",
@@ -592,8 +585,7 @@ DB_CONFIG='{
 }'
 
 # Lưu config vào Vault
-curl -X POST "${VAULT_URL}/v1/secret/data/${USER_UUID}/db-config" \
-  -H "X-Vault-Token: ${VAULT_TOKEN}" \
+curl -X POST "${VAULT_URL}/secrets" \
   -H "Content-Type: application/json" \
   -d "${DB_CONFIG}"
 
@@ -605,21 +597,8 @@ echo "Database config saved for user: ${USER_UUID}"
 #!/bin/bash
 
 # Test API Proxy với Vault integration
-curl -X POST http://localhost:8888/proxy/flexible \
-  -H "Content-Type: application/json" \
-  -d '{
-    "uuid": "user-12345",
-    "operation": "db",
-    "target": "self",
-    "path": "health",
-    "arguments": {
-      "check_connection": true
-    },
-    "metadata": {
-      "user_id": "user-12345",
-      "request_id": "req-001"
-    }
-  }'
+curl -X GET http://localhost:8888/database/health \
+  -H "X-User-UUID: user-12345"
 ```
 
 ### 3. Bulk Setup cho nhiều Users
@@ -628,14 +607,15 @@ curl -X POST http://localhost:8888/proxy/flexible \
 
 # Danh sách users
 USERS=("user-001" "user-002" "user-003")
-VAULT_TOKEN="your-vault-token"
-VAULT_URL="http://localhost:8200"
+VAULT_URL="http://localhost:8000"
 
 for user in "${USERS[@]}"; do
   echo "Setting up config for user: $user"
   
   # Tạo config cho mỗi user
   DB_CONFIG='{
+    "user_id": "'${user}'",
+    "name": "string",
     "data": {
       "type": "mysql",
       "host": "mysql_db",
@@ -647,8 +627,7 @@ for user in "${USERS[@]}"; do
   }'
   
   # Lưu vào Vault
-  curl -X POST "${VAULT_URL}/v1/secret/data/${user}/db-config" \
-    -H "X-Vault-Token: ${VAULT_TOKEN}" \
+  curl -X POST "${VAULT_URL}/secrets" \
     -H "Content-Type: application/json" \
     -d "${DB_CONFIG}"
   

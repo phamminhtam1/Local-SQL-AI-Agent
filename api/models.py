@@ -19,24 +19,3 @@ class ProxyRequest(BaseModel):
     path: Optional[str] = None
     arguments: Optional[Dict[str, Any]] = {}
     metadata: Optional[Dict[str, Any]] = {}
-
-class DatabaseConfig(BaseModel):
-    """Model cho database configuration"""
-    type: str
-    host: str
-    port: int
-    database: str
-    username: str
-    password: str
-    additional_params: Optional[Dict[str, Any]] = {}
-
-class ProxyResponse(BaseModel):
-    """Model cho proxy response"""
-    uuid: str
-    target: str
-    path: str
-    mode: str
-    result: Dict[str, Any]
-    timestamp: str
-    status: str
-    error: Optional[str] = None
