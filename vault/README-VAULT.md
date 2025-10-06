@@ -338,11 +338,12 @@ curl -X POST http://localhost:8000/secrets \
 
 ### 4. Sử dụng API Proxy với Vault integration
 ```bash
-# API Proxy tự động gọi Vault để lấy DB config
-curl -X POST http://localhost:8888/database/query \
+# API Proxy tự động gọi Vault để lấy DB config (Proxy CHỈ nhận JSON body)
+curl -X POST http://localhost:8888/proxy/database/query \
   -H "Content-Type: application/json" \
-  -H "X-User-UUID: user-123" \
   -d '{
+    "uuid": "user-123",
+    "name": "john-doe",
     "sql": "SELECT * FROM users WHERE id = ?",
     "params": [123]
   }'
@@ -363,14 +364,16 @@ curl -X POST http://localhost:8888/database/query \
 GET http://localhost:8888/health
 ```
 
-#### Database Query
+#### Database Query (qua Proxy)
 ```bash
-POST http://localhost:8888/database/query
+POST http://localhost:8888/proxy/database/query
 ```
 
-**Request:**
+**Request (Proxy yêu cầu body):**
 ```json
 {
+  "uuid": "user-123",
+  "name": "john-doe",
   "sql": "SELECT * FROM users WHERE status = ?",
   "params": ["active"]
 }
@@ -378,7 +381,6 @@ POST http://localhost:8888/database/query
 
 **Headers:**
 ```
-X-User-UUID: user-123
 Content-Type: application/json
 ```
 
@@ -399,24 +401,24 @@ Content-Type: application/json
 }
 ```
 
-#### Database Health Check
+#### Database Health Check (qua Proxy, Proxy chỉ nhận body)
 ```bash
-GET http://localhost:8888/database/health
+curl -X GET http://localhost:8888/proxy/database/health \
+  -H "Content-Type: application/json" \
+  -d '{
+    "uuid": "user-123",
+    "name": "john-doe"
+  }'
 ```
 
-**Headers:**
-```
-X-User-UUID: user-123
-```
-
-#### Get Database Tables
+#### Get Database Tables (qua Proxy, dùng body)
 ```bash
-GET http://localhost:8888/database/tables
-```
-
-**Headers:**
-```
-X-User-UUID: user-123
+curl -X GET http://localhost:8888/proxy/database/tables \
+  -H "Content-Type: application/json" \
+  -d '{
+    "uuid": "user-123",
+    "name": "john-doe"
+  }'
 ```
 
 ### 7. Lợi ích của tích hợp
@@ -596,9 +598,13 @@ echo "Database config saved for user: ${USER_UUID}"
 ```bash
 #!/bin/bash
 
-# Test API Proxy với Vault integration
-curl -X GET http://localhost:8888/database/health \
-  -H "X-User-UUID: user-12345"
+# Test API Proxy với Vault integration (body JSON)
+curl -X GET http://localhost:8888/proxy/database/health \
+  -H "Content-Type: application/json" \
+  -d '{
+    "uuid": "user-12345",
+    "name": "john-doe"
+  }'
 ```
 
 ### 3. Bulk Setup cho nhiều Users

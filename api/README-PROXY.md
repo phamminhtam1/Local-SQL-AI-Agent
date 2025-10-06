@@ -1,154 +1,116 @@
-# Universal API Proxy - Hướng dẫn sử dụng
+## Universal API Proxy - Hướng dẫn sử dụng
 
-## 📋 Tổng quan
+### Tổng quan
 
-Universal API Proxy là một service proxy linh hoạt hỗ trợ:
-- **Request Forwarding**: Forward request tới API endpoints
-- **Multi-Database**: MySQL, PostgreSQL, MongoDB, Redis, SQLite, Oracle, SQL Server
-- **Vault Integration**: Tự động lấy database configuration (optional)
-- **Flexible Arguments**: Hỗ trợ nhiều cách truyền dữ liệu
+- Proxy chỉ nhận request qua JSON body cho TẤT CẢ method (GET/POST/PUT/PATCH/DELETE).
+- Bắt buộc có các trường trong body: `uuid` và `name`.
+- Tự động:
+  - Lấy DB config từ Vault theo `uuid` (nếu tồn tại)
+  - Tạo `connection_string` tương ứng DB và chèn vào body trước khi forward
+  - Fallback khi downstream không chấp nhận GET/PUT/PATCH/DELETE có body: retry bằng POST + `X-HTTP-Method-Override`
 
-## 🏗️ Kiến trúc
+### Kiến trúc
 
 ```
-Client Request → Universal Proxy → Vault (DB Config) → Forward to API → Response
+Client (JSON body) → Universal Proxy → Vault (DB Config) → Forward to API → Response
 ```
 
-### Flow xử lý:
-1. **Nhận request** từ client
-2. **Extract UUID** (optional) từ request
-3. **Gọi Vault API** để lấy DB config (nếu có UUID)
-4. **Tạo connection string** từ DB config (nếu có)
-5. **Forward request** tới API endpoint với connection string
-6. **Trả về response** từ API
+### Luồng xử lý
+- Nhận body JSON (bắt buộc `uuid`, `name`)
+- Gọi Vault để lấy DB config theo `uuid` (nếu có)
+- Tạo `connection_string` và chèn vào body
+- Forward request đến endpoint đích; fallback nếu bị từ chối body
+- Trả về response từ service đích
 
-## 🚀 Cài đặt và chạy
+## Cài đặt và chạy
 
-### 1. Environment Variables
+### Environment Variables
 ```bash
-# .env file
+# .env
 VAULT_SERVICE_URL=http://host.docker.internal:8000
 API_BASE_URL=http://localhost:8888
 ```
 
-### 2. Chạy với Docker
+### Chạy development
 ```bash
-# Build và chạy
-docker-compose up --build -d
-
-# Hoặc chỉ chạy API service
-docker-compose up api
-```
-
-### 3. Chạy development
-```bash
-# Install dependencies
 pip install -r requirements.txt
-
-# Chạy server
 uvicorn main:app --host 0.0.0.0 --port 8888 --reload
 ```
 
-## 📡 API Endpoints
+## API Endpoints
 
-### 1. Health Check
-```bash
-GET /health
-```
+### Health Check
+- Method: GET
+- URL: `/health`
+- Không yêu cầu body.
 
-**Response:**
+### Supported Databases
+- Method: GET
+- URL: `/databases`
+- Không yêu cầu body.
+
+### Universal Proxy
+- Method: GET/POST/PUT/PATCH/DELETE
+- URL: `/proxy/{path:path}`
+- Yêu cầu body JSON chứa tối thiểu:
 ```json
 {
-  "status": "healthy",
-  "timestamp": "2024-01-01T00:00:00",
-  "targets": ["vault", "self"],
-  "supported_databases": ["mysql", "postgresql", "mongodb", "redis", "sqlite", "oracle", "sqlserver"],
-  "modes": ["forward"],
-  "supported_arguments": ["uuid", "connection_string"]
+  "uuid": "user-uuid",
+  "name": "user-name"
 }
 ```
+- Proxy sẽ tự chèn `connection_string` (nếu có) trước khi forward.
 
-### 2. Get Supported Databases
+Ví dụ:
 ```bash
-GET /databases
-```
-
-**Response:**
-```json
-{
-  "supported_databases": ["mysql", "postgresql", "mongodb", "redis", "sqlite", "oracle", "sqlserver"],
-  "count": 7
-}
-```
-
-### 3. Universal Flow (Forward Request)
-```bash
-/proxy/{path:path}
-```
-
-**Ví dụ:**
-```bash
-POST /proxy/database/query
-POST /proxy/search/users
-GET /proxy/database/health
-```
-
-## 🎯 Cách sử dụng
-
-### 1. Request với UUID (có Vault integration)
-
-#### Database Operations
-```bash
-curl -X POST http://localhost:8888/proxy/database/query \
+# GET với body (proxy sẽ forward body; nếu downstream không chấp nhận, proxy tự retry POST + override)
+curl -X GET http://localhost:8888/proxy/log_space \
   -H "Content-Type: application/json" \
-  -H "X-User-UUID: 123e4567-e89b-12d3-a456-426614174000" \
   -d '{
-    "sql": "SELECT * FROM users WHERE id = ?",
-    "params": [123]
+    "uuid": "user-123",
+    "name": "john-doe"
   }'
-```
 
-#### Search Operations
-```bash
-curl -X POST http://localhost:8888/proxy/search/query \
-  -H "Content-Type: application/json" \
-  -H "X-User-UUID: 123e4567-e89b-12d3-a456-426614174000" \
-  -d '{
-    "query": "search term",
-    "filters": {"category": "tech"}
-  }'
-```
-
-### 2. Request không có UUID (forward trực tiếp)
-
-```bash
+# POST với body cho truy vấn DB
 curl -X POST http://localhost:8888/proxy/database/query \
   -H "Content-Type: application/json" \
   -d '{
-    "sql": "SELECT * FROM users",
+    "uuid": "user-123",
+    "name": "john-doe",
+    "sql": "SELECT * FROM users LIMIT 10",
     "params": []
   }'
 ```
 
-### 3. Sử dụng Query Parameters
+### Headers và fallback
+- Proxy chuẩn hóa:
+  - `Content-Type: application/json`
+  - `Accept: application/json`
+- Khi fallback: thêm `X-HTTP-Method-Override: <ORIGINAL_METHOD>`
 
-```bash
-curl -X GET "http://localhost:8888/proxy/database/health?uuid=123e4567-e89b-12d3-a456-426614174000"
+### Endpoint ví dụ nội bộ: Log Space
+- Method: POST
+- URL: `/log_space`
+- Gọi trực tiếp endpoint này cần có body dạng:
+```json
+{
+  "connection_string": "mysql+pymysql://user:pass@host:3306/db"
+}
 ```
+- Nếu gọi thông qua proxy (khuyến nghị):
+```bash
+curl -X GET http://localhost:8888/proxy/log_space \
+  -H "Content-Type: application/json" \
+  -d '{
+    "uuid": "user-123",
+    "name": "john-doe"
+  }'
+```
+Proxy sẽ tự chèn `connection_string` vào body trước khi forward đến `/log_space`.
 
-## 🗄️ Database Support
-
-### Supported Databases
-- **MySQL**: `mysql+pymysql://user:pass@host:port/db`
-- **PostgreSQL**: `postgresql://user:pass@host:port/db`
-- **MongoDB**: `mongodb://user:pass@host:port/db`
-- **Redis**: `redis://:pass@host:port/db`
-- **SQLite**: `sqlite:///path/to/db.db`
-- **Oracle**: `oracle://user:pass@host:port/db`
-- **SQL Server**: `mssql+pyodbc://user:pass@host:port/db`
-
-### Vault Configuration
-Proxy tự động lấy DB config từ Vault:
+## Vault Integration
+- Dựa trên `uuid`, proxy gọi Vault để lấy DB config và xây `connection_string`.
+- Ví dụ cấu hình từ Vault:
 ```json
 {
   "type": "mysql",
@@ -160,175 +122,40 @@ Proxy tự động lấy DB config từ Vault:
 }
 ```
 
-## 📊 Response Format
+## Connection String (tham khảo)
+- MySQL: `mysql+pymysql://user:pass@host:3306/db`
+- PostgreSQL: `postgresql+psycopg2://user:pass@host:5432/db`
+- MongoDB: `mongodb://user:pass@host:27017/db`
+- Redis: `redis://:pass@host:6379/0`
+- SQLite: `sqlite:///path/to/db.db`
+- Oracle: `oracle+cx_oracle://user:pass@host:1521/db`
+- SQL Server: `mssql+pyodbc://user:pass@host:1433/db?driver=ODBC+Driver+17+for+SQL+Server`
 
-### Success Response
-```json
-{
-  "uuid": "123e4567-e89b-12d3-a456-426614174000",
-  "connection_string": "mysql+pymysql://...",
-  "result": {
-    "sql": "SELECT * FROM users",
-    "params": [123],
-    "result": "Query executed successfully",
-    "rows_affected": 1,
-    "timestamp": "2024-01-01T00:00:00"
-  },
-  "timestamp": "2024-01-01T00:00:00",
-  "status": "success"
-}
-```
+Ghi chú:
+- Khi dùng `URL.create` của SQLAlchemy, không cần tự encode credentials; fallback string sẽ được encode bằng `quote_plus` khi cần.
+- Với MySQL dùng `caching_sha2_password/sha256_password`, cần `cryptography` hoặc dùng driver `mysql+mysqlconnector`.
 
-### Error Response
-```json
-{
-  "error": "Error message",
-  "timestamp": "2024-01-01T00:00:00",
-  "status": "failed"
-}
-```
+## Error Handling
+- 400: Thiếu `uuid` hoặc `name` trong body
+- 405/411/415/501: Fallback POST + `X-HTTP-Method-Override`
+- 500: Lỗi nội bộ (Vault/DB hoặc xử lý)
 
-## 🔧 Configuration
-
-### Environment Variables
+## Ví dụ nhanh
 ```bash
-# Vault Configuration
-VAULT_SERVICE_URL=http://host.docker.internal:8000
-
-# API Configuration
-API_BASE_URL=http://localhost:8888
-
-# Environment
-ENVIRONMENT=development
+curl -X PATCH http://localhost:8888/proxy/database/update \
+  -H "Content-Type: application/json" \
+  -d '{
+    "uuid": "user-123",
+    "name": "john-doe",
+    "sql": "UPDATE users SET status = ? WHERE id = ?",
+    "params": ["active", 1]
+  }'
 ```
 
-### Docker Compose
-```yaml
-api:
-  build: ./api
-  container_name: api_proxy
-  env_file:
-    - ./.env
-  environment:
-    - VAULT_SERVICE_URL=http://host.docker.internal:8000
-    - API_BASE_URL=http://localhost:8888
-  ports:
-    - "8888:8888"
-  volumes:
-    - ./api:/app
-    - ./.env:/app/.env:ro
-```
-
-## 🐛 Debugging
-
-### 1. Logs
+## Debugging
 ```bash
-# Xem logs
-docker-compose logs -f api
-
-# Hoặc
-docker logs api_proxy
-```
-
-### 2. Health Check
-```bash
-# Kiểm tra health
 curl http://localhost:8888/health
 ```
 
-### 3. Test Vault Connection
-```bash
-# Test Vault
-curl -X GET http://localhost:8888/proxy/vault/secrets?user_id=test&include_values=true&name=string
-```
-
-## 📝 Examples
-
-### 1. Complete Database Query
-```bash
-curl -X POST http://localhost:8888/proxy/database/query \
-  -H "Content-Type: application/json" \
-  -H "X-User-UUID: user-123" \
-  -d '{
-    "sql": "SELECT u.*, p.name as profile_name FROM users u LEFT JOIN profiles p ON u.id = p.user_id WHERE u.status = ?",
-    "params": ["active"]
-  }'
-```
-
-### 2. Search with Filters
-```bash
-curl -X POST http://localhost:8888/proxy/search/query \
-  -H "Content-Type: application/json" \
-  -H "X-User-UUID: user-123" \
-  -d '{
-    "query": "machine learning",
-    "filters": {
-      "category": "technology",
-      "date_range": "2024-01-01,2024-12-31",
-      "language": "en"
-    },
-    "limit": 10,
-    "offset": 0
-  }'
-```
-
-### 3. Health Check
-```bash
-curl -X GET http://localhost:8888/proxy/database/health \
-  -H "X-User-UUID: user-123"
-```
-
-## 🚨 Error Handling
-
-### Common Errors
-- **400 Bad Request**: Missing required parameters
-- **404 Not Found**: API endpoint not found
-- **500 Internal Server Error**: Vault connection failed or processing error
-- **502 Bad Gateway**: API service unavailable
-- **504 Gateway Timeout**: API service timeout
-
-### Error Response Format
-```json
-{
-  "error": "Detailed error message",
-  "timestamp": "2024-01-01T00:00:00",
-  "status": "failed",
-  "error_code": "VAULT_CONNECTION_FAILED"
-}
-```
-
-## 🔒 Security
-
-### Headers Security
-- `X-User-UUID`: Optional for Vault integration
-- `X-Connection-String`: Automatically added by proxy
-- `X-Database-Type`: Automatically added by proxy
-
-### Vault Integration
-- Automatic DB config retrieval (if UUID provided)
-- Secure connection string generation
-- Environment-based configuration
-
-## 📈 Performance
-
-### Connection Pooling
-- HTTP client with connection pooling
-- Timeout configuration (30s default)
-- Retry mechanism for failed requests
-
-### Monitoring
-- Request/response logging
-- Performance metrics
-- Error tracking
-
-## 🤝 Contributing
-
-1. Fork repository
-2. Create feature branch
-3. Make changes
-4. Test thoroughly
-5. Submit pull request
-
-## 📄 License
-
-MIT License - See LICENSE file for details.
+## License
+MIT License - See LICENSE
