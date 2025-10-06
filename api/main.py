@@ -1,4 +1,5 @@
 import os
+import re
 from fastapi import FastAPI, Request, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -377,3 +378,89 @@ async def change_password(request: Request):
             return rows
     except Exception as e:
         logger.error(f"Error changing password: {e}")
+
+@app.post("/list_tables")
+async def list_tables(request: Request):
+
+    try:
+        data = await request.json()
+        connection_string = data.get("connection_string")
+        db_name = data.get("db_name")
+
+        if not connection_string:
+            return {"error": "Missing connection_string in payload"}
+
+        db_type = detect_db_type(connection_string)
+        query_path = resolve_query_path("list_table", db_type)
+        engine = create_engine(connection_string)
+        with engine.connect() as conn:
+
+            query = text(open(query_path).read())
+            # Pass db_name parameter to the query
+            result = conn.execute(query, {"db_name": db_name})
+
+            logger.info("Log query path: "+query_path)
+            # Convert Row objects to dictionaries
+            rows = []
+            for row in result:
+                rows.append(dict(row._mapping))
+
+            logger.info("List tables query executed successfully")
+            return rows
+    except Exception as e:
+        logger.error(f"Error listing tables: {e}")
+        return {"error": str(e)}
+
+
+@app.post("/query_sql")
+async def query_sql(request: Request):
+    
+    try:
+        data = await request.json()
+        connection_string = data.get("connection_string")
+        sql = data.get("sql")
+
+        if not connection_string:
+            return {"error": "Missing connection_string in payload"}
+        
+        statements = [stmt.strip() for stmt in sql.split(';') if stmt.strip()]
+        if not statements:
+            return "No valid SQL statements found"
+        engine = create_engine(connection_string)
+        with engine.connect() as conn:
+            results = []
+            for i, statement in enumerate(statements):
+                if not re.match(r"^\s*select", statement, re.IGNORECASE):
+                    results.append(f"Statement {i+1} refused: Only SELECT allowed")
+                    continue
+                try:
+                    result = conn.execute(text(statement))
+                    rows = []
+                    for row in result:
+                        rows.append(dict(row._mapping))
+
+                    results.append({
+                        "query_index": i + 1,
+                        "sql": statement,
+                        "result": rows,
+                        "row_count": len(rows)
+                    })
+                    
+                except Exception as e:
+                    results.append({
+                        "query_index": i + 1,
+                        "sql": statement,
+                        "error": str(e),
+                        "result": None
+                    })
+                
+            
+            return {
+                "success": True,
+                "total_queries": len(statements),
+                "results": results
+            }
+
+    except Exception as e:
+        logger.error(f"Error executing SQL query: {e}")
+        return {"error": str(e)}
