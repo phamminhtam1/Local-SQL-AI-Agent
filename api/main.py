@@ -1,10 +1,11 @@
+import os
 from fastapi import FastAPI, Request, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from sqlalchemy import create_engine, text
 import httpx, logging, json
 from datetime import datetime
-
+from sqlalchemy import URL, create_engine, text
 from services import UniversalProxyService
 from models import DatabaseType, ProxyRequest
 from settings import PROXY_TARGETS
@@ -12,6 +13,7 @@ from settings import PROXY_TARGETS
 # config logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+import socket
 
 app = FastAPI(
     title="Universal API Proxy",
@@ -49,6 +51,56 @@ async def get_client():
         await client.aclose()
 
 proxy_service = UniversalProxyService()
+
+SUPPORTED_DB_DIRS = {
+    "mysql": "mysql",
+    "postgresql": "postgresql",
+    "postgres": "postgresql",
+    "mssql": "sqlserver",
+    "sqlserver": "sqlserver",
+    "oracle": "oracle",
+    "sqlite": "sqlite",
+    "redis": "Redis",
+    "mongodb": "MongoDB",
+    "mongo": "MongoDB",
+}
+
+def detect_db_type(connection_string: str) -> str:
+    low = connection_string.lower()
+    if "://" in low:
+        scheme = low.split("://", 1)[0]
+        base = scheme.split("+", 1)[0]
+        if base == "postgres": base = "postgresql"
+        if base in ("mssql", "sqlserver"): base = "sqlserver"
+        if base == "mongo": base = "mongodb"
+        return base
+    return "mysql"
+
+
+def resolve_query_path(op: str, db_type: str) -> str:
+    """
+    Trả về đường dẫn file query theo op và db_type.
+    - SQL DBs → .sql
+    - MongoDB/Redis → .py
+    """
+    dbt = SUPPORTED_DB_DIRS.get(db_type.lower())
+    if not dbt:
+        raise HTTPException(status_code=400, detail=f"Unsupported db_type: {db_type}")
+
+    # Chọn phần mở rộng theo loại DB
+    ext = ".py" if dbt in ("MongoDB", "Redis") else ".sql"
+
+    candidate = os.path.join("queries", dbt, f"{op}{ext}")
+    if os.path.exists(candidate):
+        return candidate
+
+    # Fallback legacy (chỉ áp dụng cho SQL .sql)
+    if ext == ".sql":
+        legacy = os.path.join("queries", f"{op}.sql")
+        if os.path.exists(legacy):
+            return legacy
+
+    raise HTTPException(status_code=404, detail=f"Query file not found: {candidate}")
 
 @app.get("/health")
 async def health_check():
@@ -144,6 +196,67 @@ async def flexible_proxy(
     
     return await proxy_service.execute_universal_flow(mock_request, client)
 
+@app.post('/health_check')
+async def check_health(request: Request):
+    try:
+        data = await request.json()
+        connection_string = data.get("connection_string")
+
+        if not connection_string:
+            return {"error": "Missing connection_string in payload"}
+
+        db_type = detect_db_type(connection_string)
+        query_path = resolve_query_path("health_check", db_type)
+
+        engine = create_engine(connection_string)
+        with engine.connect() as conn:
+
+            query = text(open(query_path).read())
+            result = conn.execute(query)
+
+            logger.info("Log query path: "+query_path)
+            # Convert Row objects to dictionaries
+            rows = []
+            for row in result:
+                rows.append(dict(row._mapping))  # Sử dụng _mapping
+
+            logger.info("Health check query executed successfully")
+            return rows
+    except Exception as e:
+        logger.error(f"Error checking health: {e}")
+        return {"error": str(e)}
+
+
+@app.post("/db_size")
+async def check_db_size(request: Request):
+    try:
+        data = await request.json()
+        connection_string = data.get("connection_string")
+        db_name = data.get("db_name")
+        
+        if not connection_string:
+            return {"error": "Missing connection_string in payload"}
+        
+        db_type = detect_db_type(connection_string)
+        query_path = resolve_query_path("db_size", db_type)
+        engine = create_engine(connection_string)
+        with engine.connect() as conn:
+
+            query = text(open(query_path).read())
+            result = conn.execute(query, {"db_name": db_name})
+
+            logger.info("Log query path: "+query_path)
+            # Convert Row objects to dictionaries
+            rows = []
+            for row in result:
+                rows.append(dict(row._mapping))  # Sử dụng _mapping
+
+            logger.info("DB Size query executed successfully")
+            return rows
+    except Exception as e:
+        logger.error(f"Error checking database size: {e}")
+
+
 @app.post("/log_space")
 async def check_log_space(request: Request):
     try:
@@ -153,21 +266,14 @@ async def check_log_space(request: Request):
         if not connection_string:
             return {"error": "Missing connection_string in payload"}
 
+        db_type = detect_db_type(connection_string)
+        query_path = resolve_query_path("log_space", db_type)
         engine = create_engine(connection_string)
         with engine.connect() as conn:
-            query = text("""SELECT 
-                        table_schema AS "Database",
-                        ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS 'Total_Size_MB',
-                        ROUND(SUM(data_length) / 1024 / 1024, 2) AS "Data_Size_MB",
-                        ROUND(SUM(index_length) / 1024 / 1024, 2) AS "Index_Size_MB",
-                        COUNT(*) AS "Table_Count"
-                    FROM information_schema.tables 
-                    WHERE table_schema NOT IN ('information_schema', 'performance_schema', 'mysql', 'sys')
-                    GROUP BY table_schema
-                    ORDER BY SUM(data_length + index_length) DESC;"""
-            )
+            query = text(open(query_path).read())
             result = conn.execute(query)
             
+            logger.info("Log query path: "+query_path)
             # Convert Row objects to dictionaries
             rows = []
             for row in result:
@@ -179,3 +285,95 @@ async def check_log_space(request: Request):
     except Exception as e:
         logger.error(f"Error checking log space: {e}")
         return {"error": str(e)}
+
+
+@app.post("/blocking_sessions")
+async def check_blocking_sessions(request: Request):
+    try:
+        data = await request.json()
+        connection_string = data.get("connection_string")
+
+        if not connection_string:
+            return {"error": "Missing connection_string in payload"}
+            
+        db_type = detect_db_type(connection_string)
+        query_path = resolve_query_path("blocking_session", db_type)
+        engine = create_engine(connection_string)
+        with engine.connect() as conn:
+
+            query = text(open(query_path).read())
+            result = conn.execute(query)
+            
+            logger.info("Log query path: "+query_path)
+            # Convert Row objects to dictionaries
+            rows = []
+            for row in result:
+                rows.append(dict(row._mapping))
+
+            logger.info("Blocking Sessions query executed successfully")
+            return rows
+    except Exception as e:
+        logger.error(f"Error checking blocking sessions: {e}")
+
+
+@app.post("/index_frag")
+async def check_index_fragmentation(request: Request):
+
+    try:
+        data = await request.json()
+        connection_string = data.get("connection_string")
+        db_name = data.get("db_name")
+
+        if not connection_string:
+            return {"error": "Missing connection_string in payload"}
+
+        db_type = detect_db_type(connection_string)
+        query_path = resolve_query_path("index_frag", db_type)
+        engine = create_engine(connection_string)
+        with engine.connect() as conn:
+
+            query = text(open(query_path).read())
+            result = conn.execute(query, {"db_name": db_name})
+
+            logger.info("Log query path: "+query_path)
+            # Convert Row objects to dictionaries
+            rows = []
+            for row in result:
+                rows.append(dict(row._mapping))
+
+            logger.info("Index Fragmentation query executed successfully")
+            return rows
+    except Exception as e:
+        logger.error(f"Error checking index frag: {e}")
+
+        
+@app.post("/change_pwd")
+async def change_password(request: Request):
+
+    try:
+        data = await request.json()
+        connection_string = data.get("connection_string")
+        login_name = data.get("login_name")
+        new_password = data.get("new_password")
+
+        if not connection_string:
+            return {"error": "Missing connection_string in payload"}
+
+        db_type = detect_db_type(connection_string)
+        query_path = resolve_query_path("change_pwd", db_type)
+        engine = create_engine(connection_string)
+        with engine.connect() as conn:
+
+            query = text(open(query_path).read())
+            result = conn.execute(query, {"login_name": login_name, "password": new_password})
+
+            logger.info("Log query path: "+query_path)
+            # Convert Row objects to dictionaries
+            rows = []
+            for row in result:
+                rows.append(dict(row._mapping))
+
+            logger.info("Change Password query executed successfully")
+            return rows
+    except Exception as e:
+        logger.error(f"Error changing password: {e}")

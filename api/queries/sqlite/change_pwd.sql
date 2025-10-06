@@ -1,0 +1,1 @@
+ALTER LOGIN {{ $fromAI('login_name') }} WITH PASSWORD = '{{$fromAi('password')}}';
