@@ -5,7 +5,7 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine, URL
 from sqlalchemy.engine import Engine
 from datetime import datetime
-
+from urllib.parse import quote_plus
 logger = logging.getLogger(__name__)
 
 class ConnectionStringBuilder:
@@ -49,24 +49,27 @@ class ConnectionStringBuilder:
     
     def _generate_mysql_connection(self, config: Dict[str, Any]) -> str:
         """Create MySQL connection string using SQLAlchemy URL"""
+        logger.info(f"MySQL config received: {config}")
+
         try:
-            url = URL.create(
-                drivername="mysql+pymysql",
-                username=config.get("username", "root"),
-                password=config.get("password", ""),
-                host=config.get("host", "localhost"),
-                port=config.get("port", 3306),
-                database=config.get("database", "default")
-            )
-            return str(url)
+            password = config.get("password", "")
+            encoded_password = quote_plus(password)
+            logger.info("encoded_password" + encoded_password)
+
+            username=quote_plus(config.get("username", "root"))
+            host=config.get("host", "localhost")
+            port=config.get("port", 3306)
+            database=quote_plus(config.get("database", "default"))
+            logger.info(f"Generated connection string:"+ f"mysql+pymysql://{username}:{encoded_password}@{host}:{port}/{database}")
+            return f"mysql+pymysql://{username}:{encoded_password}@{host}:{port}/{database}"
         except Exception as e:
             logger.error(f"Error generating MySQL connection: {str(e)}")
             # fallback to manual string
             host = config.get("host", "localhost")
-            port = config.get("port", "3306")
-            database = config.get("database", "default")
-            username = config.get("username", "root")
-            password = config.get("password", "")
+            port = config.get("port", "3306") or 3306
+            database = quote_plus(config.get("database", "default"))
+            username = quote_plus(config.get("username", "root"))
+            password = quote_plus(config.get("password", ""))
             return f"mysql+pymysql://{username}:{password}@{host}:{port}/{database}"
     
     def _generate_postgresql_connection(self, config: Dict[str, Any]) -> str:
