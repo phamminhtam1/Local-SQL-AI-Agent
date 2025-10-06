@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Request, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from sqlalchemy import create_engine, text
 import httpx, logging, json
 from datetime import datetime
 
@@ -142,3 +143,39 @@ async def flexible_proxy(
     mock_request._body = body
     
     return await proxy_service.execute_universal_flow(mock_request, client)
+
+@app.post("/log_space")
+async def check_log_space(request: Request):
+    try:
+        data = await request.json()
+        connection_string = data.get("connection_string")
+
+        if not connection_string:
+            return {"error": "Missing connection_string in payload"}
+
+        engine = create_engine(connection_string)
+        with engine.connect() as conn:
+            query = text("""SELECT 
+                        table_schema AS "Database",
+                        ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS 'Total_Size_MB',
+                        ROUND(SUM(data_length) / 1024 / 1024, 2) AS "Data_Size_MB",
+                        ROUND(SUM(index_length) / 1024 / 1024, 2) AS "Index_Size_MB",
+                        COUNT(*) AS "Table_Count"
+                    FROM information_schema.tables 
+                    WHERE table_schema NOT IN ('information_schema', 'performance_schema', 'mysql', 'sys')
+                    GROUP BY table_schema
+                    ORDER BY SUM(data_length + index_length) DESC;"""
+            )
+            result = conn.execute(query)
+            
+            # Convert Row objects to dictionaries
+            rows = []
+            for row in result:
+                rows.append(dict(row._mapping))  # Sử dụng _mapping
+            
+            logger.info("Log Space query executed successfully")
+            return rows
+            
+    except Exception as e:
+        logger.error(f"Error checking log space: {e}")
+        return {"error": str(e)}

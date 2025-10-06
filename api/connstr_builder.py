@@ -52,16 +52,16 @@ class ConnectionStringBuilder:
         logger.info(f"MySQL config received: {config}")
 
         try:
-            password = config.get("password", "")
-            encoded_password = quote_plus(password)
-            logger.info("encoded_password" + encoded_password)
-
-            username=quote_plus(config.get("username", "root"))
-            host=config.get("host", "localhost")
-            port=config.get("port", 3306)
-            database=quote_plus(config.get("database", "default"))
-            logger.info(f"Generated connection string:"+ f"mysql+pymysql://{username}:{encoded_password}@{host}:{port}/{database}")
-            return f"mysql+pymysql://{username}:{encoded_password}@{host}:{port}/{database}"
+            url = URL.create(
+                drivername="mysql+pymysql",  # Specify the driver
+                username=config.get("username", "root"),
+                password=config.get("password", ""),
+                host=config.get("host", "localhost"),
+                port=int(config.get("port", 3306)),  # Convert to int
+                database=config.get("database", "default")
+            )
+            logger.info(f"Generated connection string: {str(url)}")
+            return str(url.render_as_string(hide_password=False))
         except Exception as e:
             logger.error(f"Error generating MySQL connection: {str(e)}")
             # fallback to manual string
@@ -76,14 +76,14 @@ class ConnectionStringBuilder:
         """Create PostgreSQL connection string using SQLAlchemy URL"""
         try:
             url = URL.create(
-                drivername="postgresql",
+                drivername="postgresql+psycopg2",  # Specify the driver
                 username=config.get("username", "postgres"),
-                password=config.get("password", ""),
+                password=config.get("password", ""),  # Use encoded password
                 host=config.get("host", "localhost"),
-                port=config.get("port", 5432),
+                port=int(config.get("port", 5432)),  # Convert to int
                 database=config.get("database", "default")
             )
-            return str(url)
+            return str(url.render_as_string(hide_password=False))
         except Exception as e:
             logger.error(f"Error generating PostgreSQL connection: {str(e)}")
             # fallback to manual string
@@ -91,8 +91,8 @@ class ConnectionStringBuilder:
             port = config.get("port", "5432")
             database = config.get("database", "default")
             username = config.get("username", "postgres")
-            password = config.get("password", "")
-            return f"postgresql://{username}:{password}@{host}:{port}/{database}"
+            password = quote_plus(config.get("password", ""))
+            return f"postgresql+psycopg2://{username}:{password}@{host}:{port}/{database}"
     
     def _generate_mongodb_connection(self, config: Dict[str, Any]) -> str:
         """Create MongoDB connection string"""
@@ -103,7 +103,7 @@ class ConnectionStringBuilder:
         password = config.get("password", "")
         
         if username and password:
-            return f"mongodb://{username}:{password}@{host}:{port}/{database}"
+            return f"mongodb://{username}:{quote_plus(password)}@{host}:{port}/{database}"
         else:
             return f"mongodb://{host}:{port}/{database}"
     
@@ -115,7 +115,7 @@ class ConnectionStringBuilder:
         password = config.get("password", "")
         
         if password:
-            return f"redis://:{password}@{host}:{port}/{database}"
+            return f"redis://:{quote_plus(password)}@{host}:{port}/{database}"
         else:
             return f"redis://{host}:{port}/{database}"
     
@@ -127,56 +127,60 @@ class ConnectionStringBuilder:
                 drivername="sqlite",
                 database=database
             )
-            return str(url)
+            return str(url.render_as_string(hide_password=False))
         except Exception as e:
             logger.error(f"Error generating SQLite connection: {str(e)}")
             # fallback to manual string
-            database = config.get("database", "default.db")
+            database = quote_plus(config.get("database", "default.db"))
             return f"sqlite:///{database}"
     
     def _generate_oracle_connection(self, config: Dict[str, Any]) -> str:
         """Create Oracle connection string using SQLAlchemy URL"""
         try:
+            password = config.get("password", "")
+            username = quote_plus(config.get("username", "system"))
+            database = quote_plus(config.get("database", "default"))
+            
             url = URL.create(
-                drivername="oracle",
-                username=config.get("username", "system"),
-                password=config.get("password", ""),
+                drivername="oracle+cx_oracle",  # Specify the driver
+                username=quote_plus(username),
+                password=password,
                 host=config.get("host", "localhost"),
-                port=config.get("port", 1521),
-                database=config.get("database", "default")
+                port=int(config.get("port", 1521)),  # Convert to int
+                database=database
             )
-            return str(url)
+            return str(url.render_as_string(hide_password=False))
         except Exception as e:
             logger.error(f"Error generating Oracle connection: {str(e)}")
             # fallback to manual string
             host = config.get("host", "localhost")
             port = config.get("port", "1521")
-            database = config.get("database", "default")
-            username = config.get("username", "system")
-            password = config.get("password", "")
-            return f"oracle://{username}:{password}@{host}:{port}/{database}"
+            database = quote_plus(config.get("database", "default"))
+            username = quote_plus(config.get("username", "system"))
+            password = quote_plus(config.get("password", ""))
+            return f"oracle+cx_oracle://{username}:{password}@{host}:{port}/{database}"
     
     def _generate_sqlserver_connection(self, config: Dict[str, Any]) -> str:
         """Create SQL Server connection string using SQLAlchemy URL"""
-        try:
+        try:            
             url = URL.create(
-                drivername="mssql+pyodbc",
+                drivername="mssql+pyodbc",  # Specify the driver
                 username=config.get("username", "sa"),
                 password=config.get("password", ""),
                 host=config.get("host", "localhost"),
-                port=config.get("port", 1433),
+                port=int(config.get("port", 1433)),  # Convert to int
                 database=config.get("database", "default"),
                 query={"driver": "ODBC Driver 17 for SQL Server"}
             )
-            return str(url)
+            return str(url.render_as_string(hide_password=False))
         except Exception as e:
             logger.error(f"Error generating SQL Server connection: {str(e)}")
             # fallback to manual string
             host = config.get("host", "localhost")
             port = config.get("port", "1433")
-            database = config.get("database", "default")
-            username = config.get("username", "sa")
-            password = config.get("password", "")
+            username = quote_plus(config.get("username", "sa"))
+            database = quote_plus(config.get("database", "default"))
+            password = quote_plus(config.get("password", ""))
             return f"mssql+pyodbc://{username}:{password}@{host}:{port}/{database}?driver=ODBC+Driver+17+for+SQL+Server"
         
     def validate_connection(self, db_config: Dict[str, Any]) -> Dict[str, Any]:
