@@ -22,7 +22,9 @@ class OrchestratorState:
         self.chat_history: List[Dict[str, str]] = []
         self.retry_count: int = 0
         self.max_retries: int = 3
-        self.iteration_info: List[Dict[str, Any]] = []  # history of loops
+        self.iteration_info: List[Dict[str, Any]] = []
+        self.db_agent_action: bool = False
+        self.search_agent_action: bool = False
         
 
 db_agent = build_db_app()
@@ -284,11 +286,14 @@ async def orchestrate(question: str, chat_history: List[Dict] = None) -> Dict[st
 
     plan = await plan_task_for_agents(question, state.chat_history, state.iteration_info)
     db_q, search_q = plan.get("database_question", ""), plan.get("search_question", "")
+    if db_q:
+        state.db_agent_action = True
+    if search_q:
+        state.search_agent_action = True
     logger.info(f"DB Question: {db_q}, Search Question: {search_q}")
-
-    if relevance in ["relevance_db" or "relevance_both"] and db_q:
+    if relevance in ["relevance_db", "relevance_both"] and db_q:
         state.db_agent_result = await run_db_agent(db_q)
-    if relevance in ["relevance_search" or "relevance_both"] and search_q:
+    if relevance in ["relevance_search", "relevance_both"] and search_q:
         state.search_agent_result = await run_search_agent(search_q)
 
     while state.retry_count < state.max_retries:
@@ -335,6 +340,7 @@ async def orchestrate(question: str, chat_history: List[Dict] = None) -> Dict[st
 
     return {
         "final_answer": state.final_answer,
+        "chat_history": state.chat_history,
         "relevance": relevance,
         "verify_result": state.verify_result,
         "iteration_info": state.iteration_info,

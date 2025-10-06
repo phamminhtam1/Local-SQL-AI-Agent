@@ -165,7 +165,7 @@ async def executor(state: AgentState) -> AgentState:
                     schema_info = f"Could not retrieve schema: {str(e)}"
 
             schema_info = clean_schema_text(schema_info)
-    
+            
             sql_prompt = f"""
             You are a SQL generator. Convert the user question to a valid SQL SELECT query.
             
@@ -203,9 +203,9 @@ async def executor(state: AgentState) -> AgentState:
             "iteration": state.get("iteration_count", 0) + 1
         }]
         
-        new_tool_results = tool_results + [result]
+        new_tool_results = tool_results + [clean_result]
         logger.info(f"Tool execution successful: {selected_tool}")
-        
+
         return {
             **state,
             "tool_results": new_tool_results,
@@ -222,10 +222,10 @@ async def executor(state: AgentState) -> AgentState:
             "iteration": state.get("iteration_count", 0) + 1,
             "error": True
         }]
-        
+
         return {
             **state,
-            "execution_history": new_execution_history
+            "new_execution_history": new_execution_history
         }
 
 # 3. Evaluator LLM - Đánh giá kết quả có đủ chưa
@@ -342,12 +342,19 @@ def final_answer_generator(state: AgentState) -> AgentState:
     
     Generate a comprehensive final answer that combines natural language reasoning with the database results.
     """
-    
     final_answer = llm.invoke(final_prompt).content
     logger.info(f"Generated final answer: {final_answer}")
     
     return {
         **state,
-        "final_answer": final_answer
+        "final_answer": final_answer,
+        "selected_tool": "",
+        "tool_metadata": {},
+        "tool_results": [],
+        "execution_history": [],
+        "is_complete": False,
+        "evaluation_reason": "",
+        "iteration_count": 0,
+        "max_iterations": 0
     }
 

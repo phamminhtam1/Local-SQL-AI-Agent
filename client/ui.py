@@ -43,7 +43,9 @@ if prompt := st.chat_input("Nhập câu hỏi (database, search, hoặc cả hai
             
             # Cập nhật chat_history từ orchestrator result
             if "chat_history" in result:
-                st.session_state["chat_history"] = result["chat_history"]
+                st.session_state["chat_history"].append({"role": "user", "content": prompt})
+                st.session_state["chat_history"].append({"role": "assistant", "content": answer})
+
 
             st.markdown(answer)
             st.session_state["messages"].append(
